@@ -1,14 +1,21 @@
 import "./App.css";
 import WhiteboardCanvas from "./canvas/WhiteboardCanvas";
-import type { ActiveTool, DrawnLine } from "./canvas/WhiteboardCanvas";
+import type {
+  ActiveTool,
+  DrawnLine,
+  StickyNote,
+  TextBox,
+  Shape,
+  WhiteboardCanvasHandle,
+} from "./canvas/WhiteboardCanvas";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-
-const recentBoards = [
-  { name: "Product sketch", meta: "Edited today" },
-  { name: "Sprint planning", meta: "2 days ago" },
-  { name: "Workshop ideas", meta: "Last week" },
-];
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 type IconName =
   | "select"
@@ -28,14 +35,258 @@ type IconName =
   | "trash"
   | "eraser";
 
+type BoardFileData = {
+  version: number;
+  title: string;
+  lines: DrawnLine[];
+  notes: StickyNote[];
+  shapes: Shape[];
+  textBoxes: TextBox[];
+  savedAt: string;
+  filePath?: string;
+};
+
+type BoardSnapshot = {
+  lines: DrawnLine[];
+  notes: StickyNote[];
+  shapes: Shape[];
+  textBoxes: TextBox[];
+};
+
+type SelectedObjectIds = {
+  lineIds: string[];
+  noteIds: string[];
+  textBoxIds: string[];
+  shapeIds: string[];
+};
+
+type RecentBoard = {
+  name: string;
+  path: string;
+  savedAt: string;
+};
+
+type LayerAction = "front" | "forward" | "backward" | "back";
+
+declare global {
+  interface Window {
+    whiteboardAPI?: {
+      exportBoardAsPng: (payload: {
+        title: string;
+        dataUrl: string;
+      }) => Promise<{ canceled: boolean; filePath?: string }>;
+      saveBoard: (
+        boardData: BoardFileData,
+      ) => Promise<{ canceled: boolean; filePath?: string }>;
+      saveBoardAs: (
+        boardData: BoardFileData,
+      ) => Promise<{ canceled: boolean; filePath?: string }>;
+      loadBoard: () => Promise<{
+        canceled: boolean;
+        filePath?: string;
+        data?: BoardFileData;
+      }>;
+      loadBoardFromPath: (filePath: string) => Promise<{
+        canceled: boolean;
+        filePath?: string;
+        data?: BoardFileData;
+      }>;
+      newBoard: (payload: {
+        isDirty: boolean;
+        boardData: BoardFileData;
+      }) => Promise<{ canceled: boolean }>;
+      onRequestCloseState: (callback: () => void) => void;
+      respondToCloseRequest: (payload: {
+        isDirty: boolean;
+        boardData: BoardFileData;
+      }) => Promise<void>;
+    };
+  }
+}
+
+const RECENT_BOARDS_STORAGE_KEY = "collab-whiteboard:recentBoards";
+const DEFAULT_TEXT_STYLE = {
+  textColor: "#1f2937",
+  fontSize: null,
+  fontWeight: "bold",
+  textAlign: "center",
+} satisfies Pick<
+  TextBox,
+  "textColor" | "fontSize" | "fontWeight" | "textAlign"
+>;
+
+function isFontWeight(value: unknown): value is TextBox["fontWeight"] {
+  return value === "normal" || value === "bold";
+}
+
+function isTextAlign(value: unknown): value is TextBox["textAlign"] {
+  return value === "left" || value === "center" || value === "right";
+}
+
+function isRecentBoard(value: unknown): value is RecentBoard {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.name === "string" &&
+    typeof candidate.path === "string" &&
+    typeof candidate.savedAt === "string"
+  );
+}
+
+function isStickyNote(value: unknown): value is StickyNote {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    typeof candidate.text === "string" &&
+    typeof candidate.color === "string"
+  );
+}
+
+function getBoardNotes(boardData: BoardFileData): StickyNote[] {
+  if (!Array.isArray(boardData.notes) || !boardData.notes.every(isStickyNote)) {
+    return [];
+  }
+
+  return boardData.notes;
+}
+
+function isShape(value: unknown): value is Shape {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const validTypes = ["rectangle", "ellipse", "triangle", "line", "arrow"];
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.type === "string" &&
+    validTypes.includes(candidate.type) &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    typeof candidate.text === "string" &&
+    typeof candidate.fill === "string" &&
+    typeof candidate.stroke === "string" &&
+    typeof candidate.strokeWidth === "number" &&
+    (candidate.lineStyle === undefined ||
+      candidate.lineStyle === "solid" ||
+      candidate.lineStyle === "dashed" ||
+      candidate.lineStyle === "dotted") &&
+    (candidate.textColor === undefined ||
+      typeof candidate.textColor === "string") &&
+    (candidate.fontSize === undefined ||
+      candidate.fontSize === null ||
+      typeof candidate.fontSize === "number") &&
+    (candidate.fontWeight === undefined ||
+      isFontWeight(candidate.fontWeight)) &&
+    (candidate.textAlign === undefined || isTextAlign(candidate.textAlign)) &&
+    typeof candidate.zIndex === "number"
+  );
+}
+
+function getBoardShapes(boardData: BoardFileData): Shape[] {
+  if (!Array.isArray(boardData.shapes) || !boardData.shapes.every(isShape)) {
+    return [];
+  }
+
+  return boardData.shapes.map((shape) => ({
+    ...shape,
+    lineStyle: shape.lineStyle ?? "solid",
+    textColor: shape.textColor ?? DEFAULT_TEXT_STYLE.textColor,
+    fontSize: typeof shape.fontSize === "number" ? shape.fontSize : null,
+    fontWeight: isFontWeight(shape.fontWeight)
+      ? shape.fontWeight
+      : DEFAULT_TEXT_STYLE.fontWeight,
+    textAlign: isTextAlign(shape.textAlign)
+      ? shape.textAlign
+      : DEFAULT_TEXT_STYLE.textAlign,
+  }));
+}
+
+function isTextBox(value: unknown): value is TextBox {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    typeof candidate.text === "string" &&
+    (candidate.textColor === undefined ||
+      typeof candidate.textColor === "string") &&
+    (candidate.fontSize === undefined ||
+      candidate.fontSize === null ||
+      typeof candidate.fontSize === "number") &&
+    (candidate.fontWeight === undefined ||
+      isFontWeight(candidate.fontWeight)) &&
+    (candidate.textAlign === undefined || isTextAlign(candidate.textAlign))
+  );
+}
+
+function getBoardTextBoxes(boardData: BoardFileData): TextBox[] {
+  if (
+    !Array.isArray(boardData.textBoxes) ||
+    !boardData.textBoxes.every(isTextBox)
+  ) {
+    return [];
+  }
+
+  return boardData.textBoxes.map((textBox) => ({
+    ...textBox,
+    textColor: textBox.textColor ?? DEFAULT_TEXT_STYLE.textColor,
+    fontSize: typeof textBox.fontSize === "number" ? textBox.fontSize : null,
+    fontWeight: isFontWeight(textBox.fontWeight)
+      ? textBox.fontWeight
+      : DEFAULT_TEXT_STYLE.fontWeight,
+    textAlign: isTextAlign(textBox.textAlign)
+      ? textBox.textAlign
+      : DEFAULT_TEXT_STYLE.textAlign,
+  }));
+}
+
+function upsertRecentBoard(
+  currentBoards: RecentBoard[],
+  nextBoard: RecentBoard,
+): RecentBoard[] {
+  return [
+    nextBoard,
+    ...currentBoards.filter((board) => board.path !== nextBoard.path),
+  ].slice(0, 8);
+}
+
 const toolbarTools = [
   { label: "Select", icon: "select", tool: "select", disabled: false },
-  { label: "Sticky note", icon: "sticky", disabled: true },
+  { label: "Sticky note", icon: "sticky", tool: "sticky", disabled: false },
   { label: "Pen", icon: "pen", tool: "pen", disabled: false },
   { label: "Eraser", icon: "eraser", tool: "eraser", disabled: false },
-  { label: "Shape", icon: "shape", disabled: true },
-  { label: "Text", icon: "text", disabled: true },
-] satisfies Array<{ label: string; icon: IconName; tool?: ActiveTool; disabled: boolean }>;
+  { label: "Shape", icon: "shape", tool: "shape", disabled: false },
+  { label: "Text", icon: "text", tool: "text", disabled: false },
+] satisfies Array<{
+  label: string;
+  icon: IconName;
+  tool?: ActiveTool;
+  disabled: boolean;
+}>;
 
 const historyTools = [
   { label: "Undo", icon: "undo" },
@@ -43,9 +294,15 @@ const historyTools = [
 ] satisfies Array<{ label: string; icon: IconName }>;
 
 const menuActions = [
-  { label: "Save Board", detail: "Store locally", icon: "save" },
-  { label: "Load Board", detail: "Open file", icon: "load" },
-] satisfies Array<{ label: string; detail: string; icon: IconName }>;
+  { label: "Save As", icon: "save", action: "saveAs" },
+  { label: "Save", icon: "save", action: "save" },
+  { label: "Upload", icon: "load", action: "upload" },
+  { label: "Export PNG", icon: "save", action: "exportPng" },
+] satisfies Array<{
+  label: string;
+  icon: IconName;
+  action: "saveAs" | "save" | "upload" | "exportPng";
+}>;
 
 const icons: Record<IconName, ReactNode> = {
   select: (
@@ -170,6 +427,25 @@ function ToolIcon({ name }: { name: IconName }) {
   );
 }
 
+function ShapeOptionIcon({ type }: { type: Shape["type"] }) {
+  return (
+    <svg className="shape-picker-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {type === "rectangle" && (
+        <rect x="4" y="6" width="16" height="12" rx="2" />
+      )}
+      {type === "ellipse" && <ellipse cx="12" cy="12" rx="8" ry="6" />}
+      {type === "triangle" && <path d="M12 4 21 20H3z" />}
+      {type === "line" && <path d="M4 18 20 6" />}
+      {type === "arrow" && (
+        <>
+          <path d="M4 18 19 3" />
+          <path d="M10 3h9v9" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 const collaborationActions = [
   { label: "Create", detail: "Start room", icon: "users" },
   { label: "Join", detail: "Use code", icon: "join" },
@@ -177,27 +453,239 @@ const collaborationActions = [
 
 const TITLE_INPUT_MAX_WIDTH = 360;
 const TITLE_INPUT_HORIZONTAL_CHROME = 18;
+const STICKY_NOTE_COLORS = [
+  { name: "Yellow", value: "#fff2a8" },
+  { name: "Orange", value: "#ffd6a5" },
+  { name: "Pink", value: "#ffb8c8" },
+  { name: "Purple", value: "#d8c7ff" },
+  { name: "Blue", value: "#b9d8ff" },
+  { name: "Cyan", value: "#b8f3ff" },
+  { name: "Green", value: "#c8f7c5" },
+  { name: "Light gray", value: "#e5e7eb" },
+  { name: "Dark", value: "#2f3542" },
+];
+const PEN_COLORS = [
+  { name: "Graphite", value: "#1f2937" },
+  { name: "Black", value: "#111827" },
+  { name: "Red", value: "#dc2626" },
+  { name: "Orange", value: "#ea580c" },
+  { name: "Blue", value: "#2563eb" },
+  { name: "Green", value: "#16a34a" },
+  { name: "Purple", value: "#7c3aed" },
+];
+const SHAPE_OPTIONS = [
+  { label: "Rectangle", type: "rectangle" },
+  { label: "Ellipse", type: "ellipse" },
+  { label: "Triangle", type: "triangle" },
+  { label: "Line", type: "line" },
+  { label: "Arrow", type: "arrow" },
+] satisfies Array<{ label: string; type: Shape["type"] }>;
 
 function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+  const [isStickyColorPickerOpen, setIsStickyColorPickerOpen] = useState(false);
+  const [isPenSettingsOpen, setIsPenSettingsOpen] = useState(false);
+  const [isShapePickerOpen, setIsShapePickerOpen] = useState(false);
+  const [selectedStickyColor, setSelectedStickyColor] = useState<string | null>(
+    null,
+  );
+  const [selectedShapeType, setSelectedShapeType] = useState<
+    Shape["type"] | null
+  >(null);
+  const [selectedPenColor, setSelectedPenColor] = useState("#1f2937");
+  const [selectedPenStrokeWidth, setSelectedPenStrokeWidth] = useState(3);
   const [activeTool, setActiveTool] = useState<ActiveTool>("select");
+  const [canvasZoom, setCanvasZoom] = useState(1);
   const [lines, setLines] = useState<DrawnLine[]>([]);
-  const [undoHistory, setUndoHistory] = useState<DrawnLine[][]>([]);
-  const [redoHistory, setRedoHistory] = useState<DrawnLine[][]>([]);
+  const [notes, setNotes] = useState<StickyNote[]>([]);
+  const [shapes, setShapes] = useState<Shape[]>([]);
+  const [textBoxes, setTextBoxes] = useState<TextBox[]>([]);
+  const [undoHistory, setUndoHistory] = useState<BoardSnapshot[]>([]);
+  const [redoHistory, setRedoHistory] = useState<BoardSnapshot[]>([]);
   const [boardTitle, setBoardTitle] = useState("Untitled Board");
   const [draftTitle, setDraftTitle] = useState("Untitled Board");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [titleInputWidth, setTitleInputWidth] = useState(TITLE_INPUT_HORIZONTAL_CHROME);
+  const [titleInputWidth, setTitleInputWidth] = useState(
+    TITLE_INPUT_HORIZONTAL_CHROME,
+  );
+  const [isSavedToastVisible, setIsSavedToastVisible] = useState(false);
+  const [savedToastKey, setSavedToastKey] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  const stickyColorPickerRef = useRef<HTMLDivElement>(null);
+  const penSettingsRef = useRef<HTMLDivElement>(null);
+  const shapePickerRef = useRef<HTMLDivElement>(null);
   const titleButtonRef = useRef<HTMLButtonElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const titleMeasureRef = useRef<HTMLSpanElement>(null);
+  const savedToastTimeoutRef = useRef<number | null>(null);
   const skipTitleBlurSaveRef = useRef(false);
   const hasEditedTitleRef = useRef(false);
+  const whiteboardCanvasRef = useRef<WhiteboardCanvasHandle>(null);
   const canUndo = undoHistory.length > 0;
   const canRedo = redoHistory.length > 0;
-  const canClearBoard = lines.length > 0;
+  const canClearBoard =
+    lines.length > 0 ||
+    notes.length > 0 ||
+    shapes.length > 0 ||
+    textBoxes.length > 0;
+  const [isDirty, setIsDirty] = useState(false);
+  const [hasLoadedRecentBoards, setHasLoadedRecentBoards] = useState(false);
+  const [recentBoards, setRecentBoards] = useState<RecentBoard[]>([]);
+
+  const getBoardFileData = useCallback(
+    (): BoardFileData => ({
+      version: 1,
+      title: boardTitle.trim() || "Untitled Board",
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+      savedAt: new Date().toISOString(),
+    }),
+    [boardTitle, lines, notes, shapes, textBoxes],
+  );
+
+  const showSavedToast = useCallback(() => {
+    if (savedToastTimeoutRef.current !== null) {
+      window.clearTimeout(savedToastTimeoutRef.current);
+    }
+
+    setSavedToastKey((currentKey) => currentKey + 1);
+    setIsSavedToastVisible(true);
+    savedToastTimeoutRef.current = window.setTimeout(() => {
+      setIsSavedToastVisible(false);
+      savedToastTimeoutRef.current = null;
+    }, 2000);
+  }, []);
+
+  const saveBoard = useCallback(async () => {
+    const result = await window.whiteboardAPI?.saveBoard(getBoardFileData());
+
+    if (!result || result.canceled || !result.filePath) {
+      return;
+    }
+
+    const filePath = result.filePath;
+
+    setIsDirty(false);
+    setIsMenuOpen(false);
+    showSavedToast();
+
+    setRecentBoards((currentBoards) =>
+      upsertRecentBoard(currentBoards, {
+        name: boardTitle.trim() || "Untitled Board",
+        path: filePath,
+        savedAt: new Date().toISOString(),
+      }),
+    );
+  }, [boardTitle, getBoardFileData, showSavedToast]);
+
+  const saveBoardAs = useCallback(async () => {
+    const result = await window.whiteboardAPI?.saveBoardAs(getBoardFileData());
+
+    if (!result || result.canceled || !result.filePath) {
+      return;
+    }
+
+    const filePath = result.filePath;
+
+    setIsDirty(false);
+    setIsMenuOpen(false);
+    showSavedToast();
+
+    setRecentBoards((currentBoards) =>
+      upsertRecentBoard(currentBoards, {
+        name: boardTitle.trim() || "Untitled Board",
+        path: filePath,
+        savedAt: new Date().toISOString(),
+      }),
+    );
+  }, [boardTitle, getBoardFileData, showSavedToast]);
+
+  const loadBoard = useCallback(async () => {
+    const result = await window.whiteboardAPI?.loadBoard();
+
+    if (!result || result.canceled || !result.data) {
+      return;
+    }
+
+    setBoardTitle(result.data.title || "Untitled Board");
+    setDraftTitle(result.data.title || "Untitled Board");
+    setLines(result.data.lines || []);
+    setNotes(getBoardNotes(result.data));
+    setShapes(getBoardShapes(result.data));
+    setTextBoxes(getBoardTextBoxes(result.data));
+    setUndoHistory([]);
+    setRedoHistory([]);
+    setIsDirty(false);
+    setIsMenuOpen(false);
+
+    const filePath = result.filePath;
+
+    if (filePath) {
+      setRecentBoards((currentBoards) =>
+        upsertRecentBoard(currentBoards, {
+          name: result.data?.title?.trim() || "Untitled Board",
+          path: filePath,
+          savedAt: result.data?.savedAt || new Date().toISOString(),
+        }),
+      );
+    }
+  }, []);
+
+  const resetBoardState = useCallback(() => {
+    setBoardTitle("Untitled Board");
+    setDraftTitle("Untitled Board");
+    setLines([]);
+    setNotes([]);
+    setShapes([]);
+    setTextBoxes([]);
+    setUndoHistory([]);
+    setRedoHistory([]);
+    setIsDirty(false);
+    setIsMenuOpen(false);
+    setIsClearModalOpen(false);
+    setIsStickyColorPickerOpen(false);
+    setIsPenSettingsOpen(false);
+    setIsShapePickerOpen(false);
+    setSelectedStickyColor(null);
+    setSelectedShapeType(null);
+    setActiveTool("select");
+  }, []);
+
+  const createNewBoard = useCallback(async () => {
+    const result = await window.whiteboardAPI?.newBoard({
+      isDirty,
+      boardData: getBoardFileData(),
+    });
+
+    if (!result || result.canceled) {
+      return;
+    }
+
+    resetBoardState();
+  }, [getBoardFileData, isDirty, resetBoardState]);
+
+  const exportBoardAsPng = useCallback(async () => {
+    const dataUrl = await whiteboardCanvasRef.current?.getPngDataUrl();
+
+    if (!dataUrl) {
+      return;
+    }
+
+    const result = await window.whiteboardAPI?.exportBoardAsPng({
+      title: boardTitle.trim() || "Untitled Board",
+      dataUrl,
+    });
+
+    if (!result || result.canceled) {
+      return;
+    }
+
+    setIsMenuOpen(false);
+    showSavedToast();
+  }, [boardTitle, showSavedToast]);
 
   const handleLinesChange = useCallback(
     (updater: (currentLines: DrawnLine[]) => DrawnLine[]) => {
@@ -206,10 +694,17 @@ function App() {
     [],
   );
 
-  const handleDrawingCommit = useCallback((previousLines: DrawnLine[]) => {
-    setUndoHistory((currentHistory) => [...currentHistory, previousLines]);
-    setRedoHistory([]);
-  }, []);
+  const handleDrawingCommit = useCallback(
+    (previousLines: DrawnLine[]) => {
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines: previousLines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+    },
+    [notes, shapes, textBoxes],
+  );
 
   const handleEraseLine = useCallback((lineId: string) => {
     setLines((currentLines) => {
@@ -221,9 +716,883 @@ function App() {
     });
   }, []);
 
-  const handleEraseCommit = useCallback((previousLines: DrawnLine[]) => {
-    setUndoHistory((currentHistory) => [...currentHistory, previousLines]);
-    setRedoHistory([]);
+  const handleEraseCommit = useCallback(
+    (previousLines: DrawnLine[]) => {
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines: previousLines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+    },
+    [notes, shapes, textBoxes],
+  );
+
+  const handleCreateNote = useCallback(
+    (note: StickyNote) => {
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setNotes((currentNotes) => [...currentNotes, note]);
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleStickyNotePlaced = useCallback(() => {
+    setSelectedStickyColor(null);
+    setIsStickyColorPickerOpen(false);
+    setActiveTool("select");
+  }, []);
+
+  const handleMoveNote = useCallback(
+    (noteId: string, x: number, y: number) => {
+      const note = notes.find((currentNote) => currentNote.id === noteId);
+
+      if (!note || (note.x === x && note.y === y)) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setNotes((currentNotes) =>
+        currentNotes.map((currentNote) =>
+          currentNote.id === noteId ? { ...currentNote, x, y } : currentNote,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleResizeNote = useCallback(
+    (
+      noteId: string,
+      bounds: Pick<StickyNote, "x" | "y" | "width" | "height">,
+    ) => {
+      const note = notes.find((currentNote) => currentNote.id === noteId);
+
+      if (
+        !note ||
+        (note.x === bounds.x &&
+          note.y === bounds.y &&
+          note.width === bounds.width &&
+          note.height === bounds.height)
+      ) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setNotes((currentNotes) =>
+        currentNotes.map((currentNote) =>
+          currentNote.id === noteId
+            ? { ...currentNote, ...bounds }
+            : currentNote,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleEditNote = useCallback(
+    (noteId: string, text: string) => {
+      const nextText = text.trim() || "New note";
+      const note = notes.find((currentNote) => currentNote.id === noteId);
+
+      if (!note || note.text === nextText) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setNotes((currentNotes) =>
+        currentNotes.map((currentNote) =>
+          currentNote.id === noteId
+            ? { ...currentNote, text: nextText }
+            : currentNote,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleDeleteNote = useCallback(
+    (noteId: string) => {
+      if (!notes.some((note) => note.id === noteId)) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setNotes((currentNotes) =>
+        currentNotes.filter((note) => note.id !== noteId),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleCreateTextBox = useCallback(
+    (textBox: TextBox) => {
+      if (textBox.text.trim()) {
+        setIsDirty(true);
+        setUndoHistory((currentHistory) => [
+          ...currentHistory,
+          { lines, notes, shapes, textBoxes },
+        ]);
+        setRedoHistory([]);
+      }
+
+      setTextBoxes((currentTextBoxes) => [...currentTextBoxes, textBox]);
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleMoveTextBox = useCallback(
+    (textBoxId: string, x: number, y: number) => {
+      const textBox = textBoxes.find(
+        (currentTextBox) => currentTextBox.id === textBoxId,
+      );
+
+      if (!textBox || (textBox.x === x && textBox.y === y)) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((currentTextBox) =>
+          currentTextBox.id === textBoxId
+            ? { ...currentTextBox, x, y }
+            : currentTextBox,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleResizeTextBox = useCallback(
+    (
+      textBoxId: string,
+      bounds: Pick<TextBox, "x" | "y" | "width" | "height">,
+    ) => {
+      const textBox = textBoxes.find(
+        (currentTextBox) => currentTextBox.id === textBoxId,
+      );
+
+      if (
+        !textBox ||
+        (textBox.x === bounds.x &&
+          textBox.y === bounds.y &&
+          textBox.width === bounds.width &&
+          textBox.height === bounds.height)
+      ) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((currentTextBox) =>
+          currentTextBox.id === textBoxId
+            ? { ...currentTextBox, ...bounds }
+            : currentTextBox,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleEditTextBox = useCallback(
+    (textBoxId: string, text: string) => {
+      const nextText = text.trim();
+
+      setTextBoxes((currentTextBoxes) => {
+        const currentTextBox = currentTextBoxes.find(
+          (textBox) => textBox.id === textBoxId,
+        );
+
+        if (!currentTextBox || currentTextBox.text === nextText) {
+          return currentTextBoxes;
+        }
+
+        const previousTextBoxes =
+          currentTextBox.text.trim() === ""
+            ? currentTextBoxes.filter((textBox) => textBox.id !== textBoxId)
+            : currentTextBoxes;
+
+        setIsDirty(true);
+        setUndoHistory((currentHistory) => [
+          ...currentHistory,
+          { lines, notes, shapes, textBoxes: previousTextBoxes },
+        ]);
+        setRedoHistory([]);
+
+        return currentTextBoxes.map((textBox) =>
+          textBox.id === textBoxId ? { ...textBox, text: nextText } : textBox,
+        );
+      });
+    },
+    [lines, notes, shapes],
+  );
+
+  const handleUpdateTextBoxStyle = useCallback(
+    (
+      textBoxId: string,
+      style: Partial<
+        Pick<TextBox, "textColor" | "fontSize" | "fontWeight" | "textAlign">
+      >,
+    ) => {
+      const textBox = textBoxes.find(
+        (currentTextBox) => currentTextBox.id === textBoxId,
+      );
+
+      if (!textBox) {
+        return;
+      }
+
+      const hasChanges = Object.entries(style).some(
+        ([key, value]) => textBox[key as keyof typeof style] !== value,
+      );
+
+      if (!hasChanges) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((currentTextBox) =>
+          currentTextBox.id === textBoxId
+            ? { ...currentTextBox, ...style }
+            : currentTextBox,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleDeleteTextBox = useCallback(
+    (textBoxId: string) => {
+      setTextBoxes((currentTextBoxes) => {
+        const currentTextBox = currentTextBoxes.find(
+          (textBox) => textBox.id === textBoxId,
+        );
+
+        if (!currentTextBox) {
+          return currentTextBoxes;
+        }
+
+        if (currentTextBox.text.trim() === "") {
+          return currentTextBoxes.filter((textBox) => textBox.id !== textBoxId);
+        }
+
+        setIsDirty(true);
+        setUndoHistory((currentHistory) => [
+          ...currentHistory,
+          { lines, notes, shapes, textBoxes: currentTextBoxes },
+        ]);
+        setRedoHistory([]);
+
+        return currentTextBoxes.filter((textBox) => textBox.id !== textBoxId);
+      });
+    },
+    [lines, notes, shapes],
+  );
+
+  const handleTextBoxPlaced = useCallback(() => {
+    setActiveTool("select");
+  }, []);
+
+  const handleCreateShape = useCallback(
+    (shape: Shape) => {
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) => [...currentShapes, shape]);
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleMoveShape = useCallback(
+    (shapeId: string, x: number, y: number) => {
+      const shape = shapes.find((currentShape) => currentShape.id === shapeId);
+
+      if (!shape || (shape.x === x && shape.y === y)) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) =>
+        currentShapes.map((currentShape) =>
+          currentShape.id === shapeId
+            ? { ...currentShape, x, y }
+            : currentShape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleResizeShape = useCallback(
+    (shapeId: string, bounds: Pick<Shape, "x" | "y" | "width" | "height">) => {
+      const shape = shapes.find((currentShape) => currentShape.id === shapeId);
+
+      if (
+        !shape ||
+        (shape.x === bounds.x &&
+          shape.y === bounds.y &&
+          shape.width === bounds.width &&
+          shape.height === bounds.height)
+      ) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) =>
+        currentShapes.map((currentShape) =>
+          currentShape.id === shapeId
+            ? { ...currentShape, ...bounds }
+            : currentShape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleEditShape = useCallback(
+    (shapeId: string, text: string) => {
+      const nextText = text.trim() || "Shape";
+      const shape = shapes.find((currentShape) => currentShape.id === shapeId);
+
+      if (!shape || shape.text === nextText) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) =>
+        currentShapes.map((currentShape) =>
+          currentShape.id === shapeId
+            ? { ...currentShape, text: nextText }
+            : currentShape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleUpdateShapeStyle = useCallback(
+    (
+      shapeId: string,
+      style: Partial<
+        Pick<
+          Shape,
+          | "fill"
+          | "stroke"
+          | "strokeWidth"
+          | "lineStyle"
+          | "textColor"
+          | "fontSize"
+          | "fontWeight"
+          | "textAlign"
+        >
+      >,
+    ) => {
+      const shape = shapes.find((currentShape) => currentShape.id === shapeId);
+
+      if (!shape) {
+        return;
+      }
+
+      const hasChanges = Object.entries(style).some(
+        ([key, value]) => shape[key as keyof typeof style] !== value,
+      );
+
+      if (!hasChanges) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) =>
+        currentShapes.map((currentShape) =>
+          currentShape.id === shapeId
+            ? { ...currentShape, ...style }
+            : currentShape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleDeleteShape = useCallback(
+    (shapeId: string) => {
+      if (!shapes.some((shape) => shape.id === shapeId)) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setShapes((currentShapes) =>
+        currentShapes.filter((shape) => shape.id !== shapeId),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleMoveSelectedObjects = useCallback(
+    (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
+      if (deltaX === 0 && deltaY === 0) {
+        return;
+      }
+
+      const hasSelection =
+        selectedIds.lineIds.length > 0 ||
+        selectedIds.noteIds.length > 0 ||
+        selectedIds.textBoxIds.length > 0 ||
+        selectedIds.shapeIds.length > 0;
+
+      if (!hasSelection) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setLines((currentLines) =>
+        currentLines.map((line) =>
+          selectedIds.lineIds.includes(line.id)
+            ? {
+                ...line,
+                points: line.points.map((point, index) =>
+                  index % 2 === 0 ? point + deltaX : point + deltaY,
+                ),
+              }
+            : line,
+        ),
+      );
+      setNotes((currentNotes) =>
+        currentNotes.map((note) =>
+          selectedIds.noteIds.includes(note.id)
+            ? { ...note, x: note.x + deltaX, y: note.y + deltaY }
+            : note,
+        ),
+      );
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((textBox) =>
+          selectedIds.textBoxIds.includes(textBox.id)
+            ? { ...textBox, x: textBox.x + deltaX, y: textBox.y + deltaY }
+            : textBox,
+        ),
+      );
+      setShapes((currentShapes) =>
+        currentShapes.map((shape) =>
+          selectedIds.shapeIds.includes(shape.id)
+            ? { ...shape, x: shape.x + deltaX, y: shape.y + deltaY }
+            : shape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleDeleteSelectedObjects = useCallback(
+    (selectedIds: SelectedObjectIds) => {
+      const hasSelection =
+        selectedIds.lineIds.length > 0 ||
+        selectedIds.noteIds.length > 0 ||
+        selectedIds.textBoxIds.length > 0 ||
+        selectedIds.shapeIds.length > 0;
+
+      if (!hasSelection) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setLines((currentLines) =>
+        currentLines.filter((line) => !selectedIds.lineIds.includes(line.id)),
+      );
+      setNotes((currentNotes) =>
+        currentNotes.filter((note) => !selectedIds.noteIds.includes(note.id)),
+      );
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.filter(
+          (textBox) => !selectedIds.textBoxIds.includes(textBox.id),
+        ),
+      );
+      setShapes((currentShapes) =>
+        currentShapes.filter(
+          (shape) => !selectedIds.shapeIds.includes(shape.id),
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleCreateObjectsBatch = useCallback(
+    (objects: {
+      lines: DrawnLine[];
+      notes: StickyNote[];
+      textBoxes: TextBox[];
+      shapes: Shape[];
+    }) => {
+      if (
+        objects.lines.length === 0 &&
+        objects.notes.length === 0 &&
+        objects.textBoxes.length === 0 &&
+        objects.shapes.length === 0
+      ) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+      setLines((currentLines) => [...currentLines, ...objects.lines]);
+      setNotes((currentNotes) => [...currentNotes, ...objects.notes]);
+      setTextBoxes((currentTextBoxes) => [
+        ...currentTextBoxes,
+        ...objects.textBoxes,
+      ]);
+      setShapes((currentShapes) => [...currentShapes, ...objects.shapes]);
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const getAllZIndexes = (): number[] => [
+    ...lines.map((line) => line.zIndex ?? 0),
+    ...notes.map((note) => note.zIndex ?? 0),
+    ...textBoxes.map((textBox) => textBox.zIndex ?? 0),
+    ...shapes.map((shape) => shape.zIndex ?? 0),
+  ];
+
+  const handleLayerObject = useCallback(
+    (
+      target:
+        | { type: "line"; id: string }
+        | { type: "note"; id: string }
+        | { type: "textBox"; id: string }
+        | { type: "shape"; id: string },
+      action: LayerAction,
+    ) => {
+      const allObjects = [
+        ...lines.map((line) => ({
+          type: "line" as const,
+          id: line.id,
+          zIndex: line.zIndex ?? 0,
+        })),
+        ...notes.map((note) => ({
+          type: "note" as const,
+          id: note.id,
+          zIndex: note.zIndex ?? 0,
+        })),
+        ...textBoxes.map((textBox) => ({
+          type: "textBox" as const,
+          id: textBox.id,
+          zIndex: textBox.zIndex ?? 0,
+        })),
+        ...shapes.map((shape) => ({
+          type: "shape" as const,
+          id: shape.id,
+          zIndex: shape.zIndex ?? 0,
+        })),
+      ];
+
+      const currentObject = allObjects.find(
+        (object) => object.type === target.type && object.id === target.id,
+      );
+
+      if (!currentObject) {
+        return;
+      }
+
+      let nextZIndex = currentObject.zIndex;
+      let swapObject: {
+        type: "line" | "note" | "textBox" | "shape";
+        id: string;
+        zIndex: number;
+      } | null = null;
+
+      if (action === "front") {
+        nextZIndex = Math.max(...allObjects.map((object) => object.zIndex)) + 1;
+      }
+
+      if (action === "back") {
+        nextZIndex = Math.min(...allObjects.map((object) => object.zIndex)) - 1;
+      }
+
+      if (action === "forward") {
+        swapObject =
+          allObjects
+            .filter((object) => object.zIndex > currentObject.zIndex)
+            .sort((a, b) => a.zIndex - b.zIndex)[0] ?? null;
+
+        if (!swapObject) {
+          return;
+        }
+
+        nextZIndex = swapObject.zIndex;
+      }
+
+      if (action === "backward") {
+        swapObject =
+          allObjects
+            .filter((object) => object.zIndex < currentObject.zIndex)
+            .sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+
+        if (!swapObject) {
+          return;
+        }
+
+        nextZIndex = swapObject.zIndex;
+      }
+
+      if (nextZIndex === currentObject.zIndex && !swapObject) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+
+      const getNextObjectZIndex = (object: {
+        type: "line" | "note" | "textBox" | "shape";
+        id: string;
+        zIndex: number;
+      }) => {
+        if (object.type === target.type && object.id === target.id) {
+          return nextZIndex;
+        }
+
+        if (
+          swapObject &&
+          object.type === swapObject.type &&
+          object.id === swapObject.id
+        ) {
+          return currentObject.zIndex;
+        }
+
+        return object.zIndex;
+      };
+
+      setLines((currentLines) =>
+        currentLines.map((line) => ({
+          ...line,
+          zIndex: getNextObjectZIndex({
+            type: "line",
+            id: line.id,
+            zIndex: line.zIndex ?? 0,
+          }),
+        })),
+      );
+
+      setNotes((currentNotes) =>
+        currentNotes.map((note) => ({
+          ...note,
+          zIndex: getNextObjectZIndex({
+            type: "note",
+            id: note.id,
+            zIndex: note.zIndex ?? 0,
+          }),
+        })),
+      );
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((textBox) => ({
+          ...textBox,
+          zIndex: getNextObjectZIndex({
+            type: "textBox",
+            id: textBox.id,
+            zIndex: textBox.zIndex ?? 0,
+          }),
+        })),
+      );
+
+      setShapes((currentShapes) =>
+        currentShapes.map((shape) => ({
+          ...shape,
+          zIndex: getNextObjectZIndex({
+            type: "shape",
+            id: shape.id,
+            zIndex: shape.zIndex ?? 0,
+          }),
+        })),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleLayerSelectedObjects = useCallback(
+    (selectedIds: SelectedObjectIds, action: LayerAction) => {
+      const selectedLineIds = new Set(selectedIds.lineIds);
+      const selectedNoteIds = new Set(selectedIds.noteIds);
+      const selectedTextBoxIds = new Set(selectedIds.textBoxIds);
+      const selectedShapeIds = new Set(selectedIds.shapeIds);
+
+      const selectedZIndexes = [
+        ...lines
+          .filter((line) => selectedLineIds.has(line.id))
+          .map((line) => line.zIndex ?? 0),
+        ...notes
+          .filter((note) => selectedNoteIds.has(note.id))
+          .map((note) => note.zIndex ?? 0),
+        ...textBoxes
+          .filter((textBox) => selectedTextBoxIds.has(textBox.id))
+          .map((textBox) => textBox.zIndex ?? 0),
+        ...shapes
+          .filter((shape) => selectedShapeIds.has(shape.id))
+          .map((shape) => shape.zIndex ?? 0),
+      ];
+
+      if (selectedZIndexes.length === 0) {
+        return;
+      }
+
+      const allZIndexes = getAllZIndexes();
+      const selectedMin = Math.min(...selectedZIndexes);
+      const selectedMax = Math.max(...selectedZIndexes);
+
+      let offset = 0;
+
+      if (action === "front") {
+        offset = Math.max(...allZIndexes) - selectedMax + 1;
+      }
+
+      if (action === "back") {
+        offset = Math.min(...allZIndexes) - selectedMin - 1;
+      }
+
+      if (action === "forward") {
+        offset = 1;
+      }
+
+      if (action === "backward") {
+        offset = -1;
+      }
+
+      if (offset === 0) {
+        return;
+      }
+
+      setIsDirty(true);
+      setUndoHistory((currentHistory) => [
+        ...currentHistory,
+        { lines, notes, shapes, textBoxes },
+      ]);
+      setRedoHistory([]);
+
+      setLines((currentLines) =>
+        currentLines.map((line) =>
+          selectedLineIds.has(line.id)
+            ? { ...line, zIndex: line.zIndex + offset }
+            : line,
+        ),
+      );
+
+      setNotes((currentNotes) =>
+        currentNotes.map((note) =>
+          selectedNoteIds.has(note.id)
+            ? { ...note, zIndex: note.zIndex + offset }
+            : note,
+        ),
+      );
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.map((textBox) =>
+          selectedTextBoxIds.has(textBox.id)
+            ? { ...textBox, zIndex: textBox.zIndex + offset }
+            : textBox,
+        ),
+      );
+
+      setShapes((currentShapes) =>
+        currentShapes.map((shape) =>
+          selectedShapeIds.has(shape.id)
+            ? { ...shape, zIndex: shape.zIndex + offset }
+            : shape,
+        ),
+      );
+    },
+    [lines, notes, shapes, textBoxes],
+  );
+
+  const handleShapePlaced = useCallback(() => {
+    setSelectedShapeType(null);
+    setIsShapePickerOpen(false);
+    setActiveTool("select");
+  }, []);
+
+  const handleZoomChange = useCallback((zoom: number) => {
+    setCanvasZoom(zoom);
   }, []);
 
   const undo = useCallback(() => {
@@ -231,35 +1600,54 @@ function App() {
       return;
     }
 
-    const previousLines = undoHistory[undoHistory.length - 1];
+    const previousSnapshot = undoHistory[undoHistory.length - 1];
 
     setUndoHistory((currentHistory) => currentHistory.slice(0, -1));
-    setRedoHistory((currentHistory) => [...currentHistory, lines]);
-    setLines(previousLines);
-  }, [canUndo, lines, undoHistory]);
+    setRedoHistory((currentHistory) => [
+      ...currentHistory,
+      { lines, notes, shapes, textBoxes },
+    ]);
+    setLines(previousSnapshot.lines);
+    setNotes(previousSnapshot.notes);
+    setShapes(previousSnapshot.shapes);
+    setTextBoxes(previousSnapshot.textBoxes);
+  }, [canUndo, lines, notes, shapes, textBoxes, undoHistory]);
 
   const redo = useCallback(() => {
     if (!canRedo) {
       return;
     }
 
-    const nextLines = redoHistory[redoHistory.length - 1];
+    const nextSnapshot = redoHistory[redoHistory.length - 1];
 
     setRedoHistory((currentHistory) => currentHistory.slice(0, -1));
-    setUndoHistory((currentHistory) => [...currentHistory, lines]);
-    setLines(nextLines);
-  }, [canRedo, lines, redoHistory]);
+    setUndoHistory((currentHistory) => [
+      ...currentHistory,
+      { lines, notes, shapes, textBoxes },
+    ]);
+    setLines(nextSnapshot.lines);
+    setNotes(nextSnapshot.notes);
+    setShapes(nextSnapshot.shapes);
+    setTextBoxes(nextSnapshot.textBoxes);
+  }, [canRedo, lines, notes, shapes, textBoxes, redoHistory]);
 
   const clearBoard = useCallback(() => {
     if (!canClearBoard) {
       return;
     }
 
-    setUndoHistory((currentHistory) => [...currentHistory, lines]);
+    setIsDirty(true);
+    setUndoHistory((currentHistory) => [
+      ...currentHistory,
+      { lines, notes, shapes, textBoxes },
+    ]);
     setRedoHistory([]);
     setLines([]);
+    setNotes([]);
+    setShapes([]);
+    setTextBoxes([]);
     setIsClearModalOpen(false);
-  }, [canClearBoard, lines]);
+  }, [canClearBoard, lines, notes, shapes, textBoxes]);
 
   const saveTitle = () => {
     if (skipTitleBlurSaveRef.current) {
@@ -273,6 +1661,9 @@ function App() {
     setBoardTitle(nextTitle);
     setDraftTitle(nextTitle);
     setIsEditingTitle(false);
+    if (nextTitle !== boardTitle) {
+      setIsDirty(true);
+    }
   };
 
   const cancelTitleEdit = () => {
@@ -296,6 +1687,91 @@ function App() {
     setIsEditingTitle(true);
   };
 
+  const openRecentBoard = useCallback(async (board: RecentBoard) => {
+    setIsMenuOpen(false);
+
+    const result = await window.whiteboardAPI?.loadBoardFromPath(board.path);
+
+    if (!result || result.canceled || !result.data) {
+      setRecentBoards((currentBoards) =>
+        currentBoards.filter((recentBoard) => recentBoard.path !== board.path),
+      );
+      return;
+    }
+
+    const title = result.data.title || "Untitled Board";
+
+    setBoardTitle(title);
+    setDraftTitle(title);
+    setLines(result.data.lines || []);
+    setNotes(getBoardNotes(result.data));
+    setShapes(getBoardShapes(result.data));
+    setTextBoxes(getBoardTextBoxes(result.data));
+    setUndoHistory([]);
+    setRedoHistory([]);
+    setIsDirty(false);
+
+    setRecentBoards((currentBoards) =>
+      upsertRecentBoard(currentBoards, {
+        name: title,
+        path: board.path,
+        savedAt: result.data?.savedAt || new Date().toISOString(),
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    const storedBoards = localStorage.getItem(RECENT_BOARDS_STORAGE_KEY);
+
+    if (!storedBoards) {
+      setHasLoadedRecentBoards(true);
+      return;
+    }
+
+    try {
+      const parsedBoards: unknown = JSON.parse(storedBoards);
+
+      if (!Array.isArray(parsedBoards) || !parsedBoards.every(isRecentBoard)) {
+        localStorage.removeItem(RECENT_BOARDS_STORAGE_KEY);
+        return;
+      }
+
+      setRecentBoards(parsedBoards.slice(0, 8));
+    } catch {
+      localStorage.removeItem(RECENT_BOARDS_STORAGE_KEY);
+    } finally {
+      setHasLoadedRecentBoards(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedRecentBoards) {
+      return;
+    }
+
+    localStorage.setItem(
+      RECENT_BOARDS_STORAGE_KEY,
+      JSON.stringify(recentBoards),
+    );
+  }, [hasLoadedRecentBoards, recentBoards]);
+
+  useEffect(() => {
+    window.whiteboardAPI?.onRequestCloseState(() => {
+      window.whiteboardAPI?.respondToCloseRequest({
+        isDirty,
+        boardData: getBoardFileData(),
+      });
+    });
+  }, [getBoardFileData, isDirty]);
+
+  useEffect(() => {
+    return () => {
+      if (savedToastTimeoutRef.current !== null) {
+        window.clearTimeout(savedToastTimeoutRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) {
@@ -317,6 +1793,139 @@ function App() {
       document.removeEventListener("keydown", handleEscape);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isStickyColorPickerOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+
+      if (target?.closest("[data-sticky-trigger='true']")) {
+        return;
+      }
+
+      if (!stickyColorPickerRef.current?.contains(event.target as Node)) {
+        setIsStickyColorPickerOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsStickyColorPickerOpen(false);
+        setSelectedStickyColor(null);
+        setActiveTool("select");
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isStickyColorPickerOpen]);
+
+  useEffect(() => {
+    if (!isPenSettingsOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+
+      if (target?.closest("[data-pen-trigger='true']")) {
+        return;
+      }
+
+      if (!penSettingsRef.current?.contains(event.target as Node)) {
+        setIsPenSettingsOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsPenSettingsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isPenSettingsOpen]);
+
+  useEffect(() => {
+    if (!isShapePickerOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+
+      if (target?.closest("[data-shape-trigger='true']")) {
+        return;
+      }
+
+      if (!shapePickerRef.current?.contains(event.target as Node)) {
+        setIsShapePickerOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsShapePickerOpen(false);
+        setSelectedShapeType(null);
+        setActiveTool("select");
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isShapePickerOpen]);
+
+  useEffect(() => {
+    if (activeTool !== "sticky" || !selectedStickyColor) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedStickyColor(null);
+        setActiveTool("select");
+      }
+    };
+
+    document.addEventListener("keydown", handleEscape);
+
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [activeTool, selectedStickyColor]);
+
+  useEffect(() => {
+    if (activeTool !== "text") {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActiveTool("select");
+      }
+    };
+
+    document.addEventListener("keydown", handleEscape);
+
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [activeTool]);
 
   useEffect(() => {
     const handleKeyboardShortcut = (event: KeyboardEvent) => {
@@ -352,7 +1961,8 @@ function App() {
 
     document.addEventListener("keydown", handleKeyboardShortcut);
 
-    return () => document.removeEventListener("keydown", handleKeyboardShortcut);
+    return () =>
+      document.removeEventListener("keydown", handleKeyboardShortcut);
   }, [redo, undo]);
 
   useEffect(() => {
@@ -395,7 +2005,8 @@ function App() {
     titleMeasureRef.current.textContent = measureText;
 
     const measuredWidth =
-      Math.ceil(titleMeasureRef.current.scrollWidth) + TITLE_INPUT_HORIZONTAL_CHROME;
+      Math.ceil(titleMeasureRef.current.scrollWidth) +
+      TITLE_INPUT_HORIZONTAL_CHROME;
     const clampedWidth = Math.min(measuredWidth, TITLE_INPUT_MAX_WIDTH);
 
     setTitleInputWidth((currentWidth) =>
@@ -408,7 +2019,10 @@ function App() {
       <header className="topbar">
         <div className="window-spacer" aria-hidden="true" />
 
-        <div className={isMenuOpen ? "app-menu open" : "app-menu"} ref={menuRef}>
+        <div
+          className={isMenuOpen ? "app-menu open" : "app-menu"}
+          ref={menuRef}
+        >
           <button
             className="menu-trigger"
             type="button"
@@ -423,30 +2037,48 @@ function App() {
           {isMenuOpen && (
             <div className="menu-panel" aria-label="Board menu actions">
               <div className="menu-section">
-                <button className="menu-action primary" type="button">
+                <button
+                  className="menu-action primary"
+                  type="button"
+                  onClick={createNewBoard}
+                >
                   <ToolIcon name="plus" />
                   <span>
                     <strong>New Board</strong>
-                    <small>Start fresh</small>
                   </span>
                 </button>
 
                 {collaborationActions.map((action) => (
-                  <button className="menu-action" type="button" key={action.label}>
+                  <button
+                    className="menu-action"
+                    type="button"
+                    key={action.label}
+                  >
                     <ToolIcon name={action.icon} />
                     <span>
                       <strong>{action.label} Room</strong>
-                      <small>{action.detail}</small>
                     </span>
                   </button>
                 ))}
 
                 {menuActions.map((action) => (
-                  <button className="menu-action" type="button" key={action.label}>
+                  <button
+                    className="menu-action"
+                    type="button"
+                    key={action.label}
+                    onClick={
+                      action.action === "saveAs"
+                        ? saveBoardAs
+                        : action.action === "save"
+                          ? saveBoard
+                          : action.action === "exportPng"
+                            ? exportBoardAsPng
+                            : loadBoard
+                    }
+                  >
                     <ToolIcon name={action.icon} />
                     <span>
                       <strong>{action.label}</strong>
-                      <small>{action.detail}</small>
                     </span>
                   </button>
                 ))}
@@ -454,16 +2086,19 @@ function App() {
 
               <div className="menu-section">
                 <div className="menu-heading">
-                  <span>Recent Boards</span>
-                  <small>3 files</small>
+                  <span>Recent</span>
                 </div>
 
                 {recentBoards.map((board) => (
-                  <button className="recent-board" type="button" key={board.name}>
+                  <button
+                    className="recent-board"
+                    type="button"
+                    key={board.path}
+                    onClick={() => openRecentBoard(board)}
+                  >
                     <span className="board-dot" aria-hidden="true" />
                     <span>
                       <strong>{board.name}</strong>
-                      <small>{board.meta}</small>
                     </span>
                   </button>
                 ))}
@@ -473,14 +2108,16 @@ function App() {
                 <span className="status-dot" aria-hidden="true" />
                 <span>
                   <strong>Local mode</strong>
-                  <small>Changes are not synced</small>
                 </span>
               </div>
             </div>
           )}
         </div>
 
-        <div className={isEditingTitle ? "board-title editing" : "board-title"} aria-label="Current board">
+        <div
+          className={isEditingTitle ? "board-title editing" : "board-title"}
+          aria-label="Current board"
+        >
           {isEditingTitle ? (
             <>
               <input
@@ -529,36 +2166,274 @@ function App() {
             <span>Users: 1</span>
           </div>
 
-          <div className="zoom-indicator" aria-label="Zoom level">
-            100%
+          <div className="zoom-control" aria-label="Zoom controls">
+            <button
+              className="zoom-control-button"
+              type="button"
+              aria-label="Zoom out"
+              title="Zoom out"
+              disabled={canvasZoom <= 1.01}
+              onClick={() => whiteboardCanvasRef.current?.zoomOut()}
+            >
+              −
+            </button>
+
+            <button
+              className="zoom-control-value"
+              type="button"
+              aria-label="Reset zoom"
+              title="Reset zoom"
+              onClick={() => whiteboardCanvasRef.current?.resetZoom()}
+            >
+              {Math.round(canvasZoom * 100)}%
+            </button>
+
+            <button
+              className="zoom-control-button"
+              type="button"
+              aria-label="Zoom in"
+              title="Zoom in"
+              disabled={canvasZoom >= 4.99}
+              onClick={() => whiteboardCanvasRef.current?.zoomIn()}
+            >
+              +
+            </button>
           </div>
         </div>
       </header>
 
+      {isSavedToastVisible && (
+        <div
+          className="saved-toast"
+          key={savedToastKey}
+          role="status"
+          aria-live="polite"
+        >
+          <svg
+            className="saved-toast-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+          <span>Saved</span>
+        </div>
+      )}
+
       <section className="workspace" aria-label="Whiteboard workspace">
         <div className="canvas-shell">
           <WhiteboardCanvas
+            ref={whiteboardCanvasRef}
             activeTool={activeTool}
             lines={lines}
+            notes={notes}
+            shapes={shapes}
+            textBoxes={textBoxes}
+            selectedStickyColor={selectedStickyColor}
+            selectedShapeType={selectedShapeType}
+            penColor={selectedPenColor}
+            penStrokeWidth={selectedPenStrokeWidth}
             onLinesChange={handleLinesChange}
             onDrawingCommit={handleDrawingCommit}
             onEraseLine={handleEraseLine}
             onEraseCommit={handleEraseCommit}
+            onCreateNote={handleCreateNote}
+            onMoveNote={handleMoveNote}
+            onResizeNote={handleResizeNote}
+            onEditNote={handleEditNote}
+            onDeleteNote={handleDeleteNote}
+            onStickyNotePlaced={handleStickyNotePlaced}
+            onCreateTextBox={handleCreateTextBox}
+            onMoveTextBox={handleMoveTextBox}
+            onResizeTextBox={handleResizeTextBox}
+            onEditTextBox={handleEditTextBox}
+            onUpdateTextBoxStyle={handleUpdateTextBoxStyle}
+            onDeleteTextBox={handleDeleteTextBox}
+            onTextBoxPlaced={handleTextBoxPlaced}
+            onCreateShape={handleCreateShape}
+            onMoveShape={handleMoveShape}
+            onResizeShape={handleResizeShape}
+            onEditShape={handleEditShape}
+            onUpdateShapeStyle={handleUpdateShapeStyle}
+            onDeleteShape={handleDeleteShape}
+            onMoveSelectedObjects={handleMoveSelectedObjects}
+            onDeleteSelectedObjects={handleDeleteSelectedObjects}
+            onCreateObjectsBatch={handleCreateObjectsBatch}
+            onLayerObject={handleLayerObject}
+            onLayerSelectedObjects={handleLayerSelectedObjects}
+            onShapePlaced={handleShapePlaced}
+            onZoomChange={handleZoomChange}
           />
         </div>
+
+        {isStickyColorPickerOpen && (
+          <div
+            className="sticky-color-picker"
+            ref={stickyColorPickerRef}
+            aria-label="Choose sticky note color"
+          >
+            <div className="sticky-color-grid">
+              {STICKY_NOTE_COLORS.map((color) => (
+                <button
+                  className={
+                    selectedStickyColor === color.value
+                      ? "sticky-color-swatch selected"
+                      : "sticky-color-swatch"
+                  }
+                  type="button"
+                  key={color.value}
+                  aria-label={`${color.name} sticky note`}
+                  title={color.name}
+                  style={{ background: color.value }}
+                  onClick={() => {
+                    setSelectedStickyColor(color.value);
+                    setIsStickyColorPickerOpen(false);
+                    setIsPenSettingsOpen(false);
+                    setActiveTool("sticky");
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isPenSettingsOpen && (
+          <div
+            className="pen-settings-popover"
+            ref={penSettingsRef}
+            aria-label="Pen settings"
+          >
+            <div className="pen-color-grid">
+              {PEN_COLORS.map((color) => (
+                <button
+                  className={
+                    selectedPenColor === color.value
+                      ? "pen-color-swatch selected"
+                      : "pen-color-swatch"
+                  }
+                  type="button"
+                  key={color.value}
+                  aria-label={`${color.name} pen`}
+                  title={color.name}
+                  style={{ background: color.value }}
+                  onClick={() => {
+                    setSelectedPenColor(color.value);
+                    setActiveTool("pen");
+                  }}
+                />
+              ))}
+            </div>
+
+            <label className="pen-size-slider" aria-label="Pen stroke size">
+              <div className="pen-size-slider-header">
+                <span>Thickness</span>
+                <strong>{selectedPenStrokeWidth}px</strong>
+              </div>
+
+              <div className="pen-size-slider-control">
+                <input
+                  type="range"
+                  min="1"
+                  max="14"
+                  step="1"
+                  value={selectedPenStrokeWidth}
+                  onChange={(event) => {
+                    setSelectedPenStrokeWidth(Number(event.target.value));
+                    setActiveTool("pen");
+                  }}
+                />
+              </div>
+            </label>
+          </div>
+        )}
+
+        {isShapePickerOpen && (
+          <div
+            className="shape-picker-popover"
+            ref={shapePickerRef}
+            aria-label="Choose shape"
+          >
+            {SHAPE_OPTIONS.map((shape) => (
+              <button
+                className={
+                  selectedShapeType === shape.type
+                    ? "shape-picker-button selected has-tooltip"
+                    : "shape-picker-button has-tooltip"
+                }
+                type="button"
+                key={shape.type}
+                aria-label={shape.label}
+                data-tooltip={shape.label}
+                onClick={() => {
+                  setSelectedShapeType(shape.type);
+                  setIsShapePickerOpen(false);
+                  setIsStickyColorPickerOpen(false);
+                  setIsPenSettingsOpen(false);
+                  setActiveTool("shape");
+                }}
+              >
+                <ShapeOptionIcon type={shape.type} />
+              </button>
+            ))}
+          </div>
+        )}
 
         <nav className="bottom-toolbar" aria-label="Whiteboard tools">
           <div className="tool-group">
             {toolbarTools.map((tool) => (
               <button
-                className={tool.tool === activeTool ? "tool-button active" : "tool-button"}
+                className={
+                  tool.tool === activeTool ||
+                  (tool.tool === "sticky" && isStickyColorPickerOpen) ||
+                  (tool.tool === "pen" && isPenSettingsOpen) ||
+                  (tool.tool === "shape" && isShapePickerOpen)
+                    ? "tool-button active has-tooltip"
+                    : "tool-button has-tooltip"
+                }
                 type="button"
                 key={tool.label}
                 aria-label={tool.label}
-                title={tool.label}
+                data-tooltip={tool.label}
+                data-sticky-trigger={
+                  tool.tool === "sticky" ? "true" : undefined
+                }
+                data-pen-trigger={tool.tool === "pen" ? "true" : undefined}
+                data-shape-trigger={tool.tool === "shape" ? "true" : undefined}
                 disabled={tool.disabled}
                 onClick={() => {
+                  if (tool.tool === "sticky") {
+                    setIsStickyColorPickerOpen((isOpen) => !isOpen);
+                    setIsPenSettingsOpen(false);
+                    setIsShapePickerOpen(false);
+                    setSelectedStickyColor(null);
+                    setActiveTool("select");
+                    return;
+                  }
+
+                  if (tool.tool === "pen") {
+                    setIsPenSettingsOpen((isOpen) => !isOpen);
+                    setIsStickyColorPickerOpen(false);
+                    setIsShapePickerOpen(false);
+                    setSelectedStickyColor(null);
+                    setActiveTool("pen");
+                    return;
+                  }
+
+                  if (tool.tool === "shape") {
+                    setIsShapePickerOpen((isOpen) => !isOpen);
+                    setIsStickyColorPickerOpen(false);
+                    setIsPenSettingsOpen(false);
+                    setSelectedShapeType(null);
+                    setActiveTool("select");
+                    return;
+                  }
+
                   if (tool.tool) {
+                    setIsStickyColorPickerOpen(false);
+                    setIsPenSettingsOpen(false);
+                    setIsShapePickerOpen(false);
+                    setSelectedStickyColor(null);
+                    setSelectedShapeType(null);
                     setActiveTool(tool.tool);
                   }
                 }}
@@ -573,10 +2448,10 @@ function App() {
           <div className="tool-group">
             {historyTools.map((tool) => (
               <button
-                className="tool-button"
+                className="tool-button has-tooltip"
                 type="button"
                 aria-label={tool.label}
-                title={tool.label}
+                data-tooltip={tool.label}
                 key={tool.label}
                 disabled={tool.label === "Undo" ? !canUndo : !canRedo}
                 onClick={tool.label === "Undo" ? undo : redo}
@@ -589,10 +2464,10 @@ function App() {
           <div className="toolbar-divider" />
 
           <button
-            className="tool-button clear-board-button"
+            className="tool-button clear-board-button has-tooltip"
             type="button"
             aria-label="Clear Board"
-            title="Clear Board"
+            data-tooltip="Clear Board"
             disabled={!canClearBoard}
             onClick={() => setIsClearModalOpen(true)}
           >
@@ -613,10 +2488,18 @@ function App() {
             <p>You can undo this action if you change your mind.</p>
 
             <div className="modal-actions">
-              <button type="button" className="modal-button" onClick={() => setIsClearModalOpen(false)}>
+              <button
+                type="button"
+                className="modal-button"
+                onClick={() => setIsClearModalOpen(false)}
+              >
                 Cancel
               </button>
-              <button type="button" className="modal-button danger" onClick={clearBoard}>
+              <button
+                type="button"
+                className="modal-button danger"
+                onClick={clearBoard}
+              >
                 Clear Board
               </button>
             </div>
