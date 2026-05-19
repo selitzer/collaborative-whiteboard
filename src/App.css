@@ -260,9 +260,11 @@ input {
   --title-x-padding: 8px;
   min-width: 0;
   width: fit-content;
-  max-width: min(360px, 38vw);
+  max-width: min(360px, 100%);
+  justify-self: start;
+  overflow: visible;
   position: relative;
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
 }
 
 .board-title-button,
@@ -283,8 +285,8 @@ input {
 
 .board-title-button {
   display: block;
-  width: fit-content;
-  max-width: min(360px, 38vw);
+  width: 100%;
+  max-width: 100%;
   overflow: hidden;
   padding: 0 var(--title-x-padding);
   text-align: left;
@@ -309,7 +311,7 @@ input {
 
 .board-title input {
   min-width: 0;
-  max-width: min(360px, 38vw);
+  max-width: 100%;
   padding: 0 var(--title-x-padding);
   outline: none;
   box-shadow: none;
@@ -346,7 +348,8 @@ input {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  min-width: 0;
+  min-width: max-content;
+  flex-shrink: 0;
   -webkit-app-region: no-drag;
 }
 
@@ -408,6 +411,13 @@ input {
   transform: translateX(-50%);
   animation: toast-lifecycle 2s ease both;
   -webkit-app-region: no-drag;
+}
+
+.room-error-toast.is-reconnecting-toast {
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #fffbeb;
+  background: rgba(120, 74, 15, 0.92);
+  box-shadow: 0 12px 34px rgba(120, 74, 15, 0.22);
 }
 
 .room-error-toast-icon {
@@ -1048,6 +1058,15 @@ input {
   line-height: 1;
 }
 
+.text-toolbar-color.is-light-color {
+  -webkit-text-stroke: 0.45px rgba(17, 24, 39, 0.62);
+  text-shadow:
+    0 1px 1px rgba(17, 24, 39, 0.65),
+    1px 0 0 rgba(17, 24, 39, 0.35),
+    -1px 0 0 rgba(17, 24, 39, 0.35);
+  box-shadow: 0 1px 0 rgba(17, 24, 39, 0.55);
+}
+
 .text-toolbar-size {
   width: auto;
   min-width: 38px;
@@ -1262,7 +1281,7 @@ input {
   border-radius: 10px;
   box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(16px);
-  z-index: 50;
+  z-index: 100;
 }
 
 .canvas-context-menu button {
@@ -1350,7 +1369,7 @@ input {
   transition:
     opacity 120ms ease,
     transform 120ms ease;
-  z-index: 100;
+  z-index: 101;
 }
 
 .context-menu-submenu-panel.opens-left {
@@ -1699,6 +1718,12 @@ input {
   border-color: rgba(255, 100, 80, 0.16);
 }
 
+.leave-room-button:hover {
+  color: #dbeafe;
+  background: rgba(96, 165, 250, 0.12);
+  border-color: rgba(96, 165, 250, 0.18);
+}
+
 .toolbar-divider {
   width: 1px;
   height: 24px;
@@ -1889,18 +1914,18 @@ input {
   }
 
   .topbar {
-    grid-template-columns: 72px auto minmax(80px, 1fr) auto;
+    grid-template-columns: 72px auto minmax(0, 1fr) auto;
     padding-right: 8px;
   }
 
   .board-title {
     --title-font-size: 12px;
-    max-width: min(260px, 28vw);
+    max-width: min(260px, 100%);
   }
 
   .board-title-button,
   .board-title input {
-    max-width: min(260px, 28vw);
+    max-width: 100%;
   }
 
   .zoom-indicator {

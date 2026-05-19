@@ -260,6 +260,10 @@ const isShape = (value: unknown): value is Shape => {
   );
 };
 
+const isSocketInRoom = (socket: Socket, roomCode: string) => {
+  return socketRooms.get(socket.id) === roomCode;
+};
+
 const getRoomBoard = (roomCode: string) => {
   const boardState = roomBoards.get(roomCode);
 
@@ -385,10 +389,59 @@ io.on("connection", (socket) => {
     emitRoomUsers(normalizedRoomCode);
   });
 
+  socket.on("room:rejoin", ({ roomCode, name }, callback) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+    const displayName = name?.trim() || "Guest";
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+      callback?.({
+        ok: false,
+        error: "Room no longer exists.",
+      });
+      return;
+    }
+
+    leaveCurrentRoom(socket);
+
+    const roomBoardState = getRoomBoard(normalizedRoomCode);
+    const boardTitle = roomBoardState.title;
+    const users = rooms.get(normalizedRoomCode) ?? [];
+
+    const nextUsers = [
+      ...users.filter((user) => user.socketId !== socket.id),
+      {
+        socketId: socket.id,
+        name: displayName,
+      },
+    ];
+
+    rooms.set(normalizedRoomCode, nextUsers);
+    roomTitles.set(normalizedRoomCode, boardTitle);
+    roomBoards.set(normalizedRoomCode, roomBoardState);
+
+    socket.join(normalizedRoomCode);
+    socketRooms.set(socket.id, normalizedRoomCode);
+
+    callback?.({
+      ok: true,
+      roomCode: normalizedRoomCode,
+      users: nextUsers,
+      count: nextUsers.length,
+      title: boardTitle,
+      boardData: roomBoardState,
+    });
+
+    emitRoomUsers(normalizedRoomCode);
+  });
+
   socket.on("board:title:update", ({ roomCode, title }, callback) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
       callback?.({
         ok: false,
         error: "Room not found.",
@@ -418,6 +471,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !isDrawnLine(line)
     ) {
       return;
@@ -445,6 +499,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !isDrawnLine(line)
     ) {
       return;
@@ -478,6 +533,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       typeof lineId !== "string"
     ) {
       return;
@@ -501,6 +557,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !Array.isArray(lineIds)
     ) {
       return;
@@ -533,6 +590,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       typeof x !== "number" ||
       typeof y !== "number"
     ) {
@@ -560,7 +618,11 @@ io.on("connection", (socket) => {
   socket.on("board:cursor:leave", ({ roomCode }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
       return;
     }
 
@@ -576,6 +638,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !selection ||
       typeof selection !== "object"
     ) {
@@ -615,7 +678,11 @@ io.on("connection", (socket) => {
   socket.on("board:marquee:end", ({ roomCode }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
       return;
     }
 
@@ -631,6 +698,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !isStickyNote(note)
     ) {
       return;
@@ -659,6 +727,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !isStickyNote(note)
     ) {
       return;
@@ -689,6 +758,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       typeof noteId !== "string"
     ) {
       return;
@@ -712,6 +782,7 @@ io.on("connection", (socket) => {
     if (
       !normalizedRoomCode ||
       !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
       !Array.isArray(noteIds)
     ) {
       return;
@@ -741,13 +812,23 @@ io.on("connection", (socket) => {
   socket.on("board:textbox:create", ({ roomCode, textBox }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isTextBox(textBox)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !isTextBox(textBox)
+    ) {
       return;
     }
 
     const boardState = getRoomBoard(normalizedRoomCode);
 
-    if (!boardState.textBoxes.some((currentTextBox) => isTextBox(currentTextBox) && currentTextBox.id === textBox.id)) {
+    if (
+      !boardState.textBoxes.some(
+        (currentTextBox) =>
+          isTextBox(currentTextBox) && currentTextBox.id === textBox.id,
+      )
+    ) {
       boardState.textBoxes = [...boardState.textBoxes, textBox];
     }
 
@@ -760,7 +841,12 @@ io.on("connection", (socket) => {
   socket.on("board:textbox:update", ({ roomCode, textBox }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isTextBox(textBox)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !isTextBox(textBox)
+    ) {
       return;
     }
 
@@ -787,7 +873,12 @@ io.on("connection", (socket) => {
   socket.on("board:textbox:delete", ({ roomCode, textBoxId }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || typeof textBoxId !== "string") {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      typeof textBoxId !== "string"
+    ) {
       return;
     }
 
@@ -807,7 +898,12 @@ io.on("connection", (socket) => {
   socket.on("board:textboxes:delete", ({ roomCode, textBoxIds }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !Array.isArray(textBoxIds)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !Array.isArray(textBoxIds)
+    ) {
       return;
     }
 
@@ -837,13 +933,22 @@ io.on("connection", (socket) => {
   socket.on("board:shape:create", ({ roomCode, shape }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isShape(shape)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !isShape(shape)
+    ) {
       return;
     }
 
     const boardState = getRoomBoard(normalizedRoomCode);
 
-    if (!boardState.shapes.some((currentShape) => isShape(currentShape) && currentShape.id === shape.id)) {
+    if (
+      !boardState.shapes.some(
+        (currentShape) => isShape(currentShape) && currentShape.id === shape.id,
+      )
+    ) {
       boardState.shapes = [...boardState.shapes, shape];
     }
 
@@ -856,7 +961,12 @@ io.on("connection", (socket) => {
   socket.on("board:shape:update", ({ roomCode, shape }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isShape(shape)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !isShape(shape)
+    ) {
       return;
     }
 
@@ -882,7 +992,12 @@ io.on("connection", (socket) => {
   socket.on("board:shape:delete", ({ roomCode, shapeId }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || typeof shapeId !== "string") {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      typeof shapeId !== "string"
+    ) {
       return;
     }
 
@@ -901,12 +1016,19 @@ io.on("connection", (socket) => {
   socket.on("board:shapes:delete", ({ roomCode, shapeIds }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !Array.isArray(shapeIds)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode) ||
+      !Array.isArray(shapeIds)
+    ) {
       return;
     }
 
     const shapeIdSet = new Set(
-      shapeIds.filter((shapeId): shapeId is string => typeof shapeId === "string"),
+      shapeIds.filter(
+        (shapeId): shapeId is string => typeof shapeId === "string",
+      ),
     );
 
     if (shapeIdSet.size === 0) {
@@ -916,7 +1038,8 @@ io.on("connection", (socket) => {
     const boardState = getRoomBoard(normalizedRoomCode);
 
     boardState.shapes = boardState.shapes.filter(
-      (currentShape) => !isShape(currentShape) || !shapeIdSet.has(currentShape.id),
+      (currentShape) =>
+        !isShape(currentShape) || !shapeIdSet.has(currentShape.id),
     );
 
     socket.to(normalizedRoomCode).emit("board:shapes:delete", {
@@ -928,7 +1051,11 @@ io.on("connection", (socket) => {
   socket.on("board:clear", ({ roomCode }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
       return;
     }
 
@@ -952,7 +1079,11 @@ io.on("connection", (socket) => {
   socket.on("board:snapshot:update", ({ roomCode, boardData }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
       return;
     }
 
@@ -968,6 +1099,33 @@ io.on("connection", (socket) => {
       roomCode: normalizedRoomCode,
       boardData: normalizedBoardData,
     });
+  });
+
+  socket.on("board:snapshot:request", ({ roomCode }, callback) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isSocketInRoom(socket, normalizedRoomCode)
+    ) {
+      callback?.({
+        ok: false,
+        error: "Room not found.",
+      });
+      return;
+    }
+
+    callback?.({
+      ok: true,
+      roomCode: normalizedRoomCode,
+      boardData: getRoomBoard(normalizedRoomCode),
+    });
+  });
+
+  socket.on("room:leave", (_payload, callback) => {
+    leaveCurrentRoom(socket);
+    callback?.({ ok: true });
   });
 
   socket.on("disconnecting", () => {

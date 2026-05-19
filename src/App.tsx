@@ -36,6 +36,7 @@ type IconName =
   | "load"
   | "menu"
   | "trash"
+  | "leave"
   | "eraser";
 
 type RoomUser = {
@@ -417,6 +418,13 @@ const icons: Record<IconName, ReactNode> = {
       <path d="m39 15h-30a5.029 5.029 0 0 1 -.941-.1l.82 26.251a4.977 4.977 0 0 0 5 4.844h20.244a4.977 4.977 0 0 0 5-4.844l.82-26.251a5.029 5.029 0 0 1 -.943.1zm-21.472 25h-.028a1 1 0 0 1 -1-.972l-.5-18a1 1 0 0 1 2-.056l.5 18a1 1 0 0 1 -.972 1.028zm7.472-1a1 1 0 0 1 -2 0v-18a1 1 0 0 1 2 0zm6.5.028a1 1 0 0 1 -1 .972h-.028a1 1 0 0 1 -.972-1.028l.5-18a.972.972 0 0 1 1.028-.972 1 1 0 0 1 .972 1.028z" />
     </>
   ),
+  leave: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
+    </>
+  ),
   eraser: (
     <path d="M456.833,172.237L318.167,33.439c-8.061-8.068-19.109-12.103-30.159-12.105c-11.055-0.002-22.11,4.033-30.175,12.105L12.5,279.006C4.437,287.076,0,297.794,0,309.201c0,11.407,4.406,22.094,12.594,30.289l95.51,93.318c10.021,9.791,23.25,15.192,37.271,15.192h71.771c14.115,0,27.417-5.464,37.479-15.4l202.208-199.972c8.063-8.07,12.5-18.789,12.5-30.195S464.896,180.308,456.833,172.237z M224.656,402.25c-2.052,2.021-4.646,3.083-7.51,3.083h-71.771c-2.844,0-5.417-1.042-7.458-3.042l-95.25-92.958l110.708-110.708l137.844,137.854L224.656,402.25z" />
   ),
@@ -608,6 +616,7 @@ function App() {
   const roomErrorToastTimeoutRef = useRef<number | null>(null);
   const activeRoomCodeRef = useRef<string | null>(null);
   const roomConnectionStatusRef = useRef<RoomConnectionStatus>("local");
+  const currentRoomDisplayNameRef = useRef("Guest");
   const isEditingTitleRef = useRef(false);
   const hasShownDisconnectToastRef = useRef(false);
   const hasShownReconnectingToastRef = useRef(false);
@@ -654,15 +663,18 @@ function App() {
 
   const getBoardFileData = useCallback(
     (): BoardFileData =>
-      buildBoardFileData({ title: boardTitle, lines, notes, shapes, textBoxes }),
+      buildBoardFileData({
+        title: boardTitle,
+        lines,
+        notes,
+        shapes,
+        textBoxes,
+      }),
     [boardTitle, buildBoardFileData, lines, notes, shapes, textBoxes],
   );
 
   const applyBoardData = useCallback(
-    (
-      boardData: BoardFileData,
-      options: { clearHistory?: boolean } = {},
-    ) => {
+    (boardData: BoardFileData, options: { clearHistory?: boolean } = {}) => {
       const nextTitle = boardData.title?.trim() || "Untitled Board";
 
       setBoardTitle(nextTitle);
@@ -1067,6 +1079,93 @@ function App() {
     hasShownConnectErrorToastRef.current = false;
   }, []);
 
+  const rejoinActiveRoomAfterReconnect = useCallback(() => {
+    const roomCode = activeRoomCodeRef.current;
+
+    if (!roomCode) {
+      return;
+    }
+
+    socket.timeout(3000).emit(
+      "room:rejoin",
+      {
+        roomCode,
+        name: currentRoomDisplayNameRef.current || "Guest",
+      },
+      (error: Error | null, response?: RoomResponse) => {
+        if (error || !response) {
+          setRoomConnectionStatus("disconnected");
+          showRoomErrorToast("Could not reconnect to room.");
+          return;
+        }
+
+        if (!response.ok) {
+          setRoomConnectionStatus("local");
+          setActiveRoomCode(null);
+          setConnectedUsersCount(1);
+          setRoomUsers([]);
+          setRemoteCursors({});
+          setRemoteMarquees({});
+          activeRoomCodeRef.current = null;
+          roomConnectionStatusRef.current = "local";
+          showRoomErrorToast(response.error || "Room no longer exists.");
+          return;
+        }
+
+        activeRoomCodeRef.current = response.roomCode;
+        roomConnectionStatusRef.current = "connected";
+
+        setActiveRoomCode(response.roomCode);
+        setRoomConnectionStatus("connected");
+        setConnectedUsersCount(response.count);
+        setRoomUsers(response.users);
+        setRemoteCursors({});
+        setRemoteMarquees({});
+
+        if (response.boardData) {
+          applyBoardData(response.boardData);
+          setIsDirty(false);
+        } else if (response.title) {
+          setBoardTitle(response.title);
+          setDraftTitle(response.title);
+        }
+
+        resetConnectionToastGuards();
+
+        setIsRoomErrorToastVisible(false);
+        setRoomError("");
+
+        window.setTimeout(() => {
+          showSuccessToast("Reconnected");
+        }, 140);
+      },
+    );
+  }, [
+    applyBoardData,
+    resetConnectionToastGuards,
+    showRoomErrorToast,
+    showSuccessToast,
+  ]);
+
+  const leaveRoom = useCallback(() => {
+    const roomCode = activeRoomCodeRef.current;
+
+    if (roomCode) {
+      socket.timeout(2000).emit("room:leave", { roomCode }, () => {});
+    }
+
+    activeRoomCodeRef.current = null;
+    roomConnectionStatusRef.current = "local";
+    currentRoomDisplayNameRef.current = "Guest";
+    setActiveRoomCode(null);
+    setRoomConnectionStatus("local");
+    setConnectedUsersCount(1);
+    setRoomUsers([]);
+    setRemoteCursors({});
+    setRemoteMarquees({});
+    resetConnectionToastGuards();
+  }, [resetConnectionToastGuards]);
+
   const copyRoomCodeToClipboard = useCallback(async () => {
     if (!activeRoomCode) {
       return;
@@ -1149,6 +1248,7 @@ function App() {
           return;
         }
 
+        currentRoomDisplayNameRef.current = displayName;
         setActiveRoomCode(response.roomCode);
         setRoomConnectionStatus("connected");
         setConnectedUsersCount(response.count);
@@ -1213,6 +1313,7 @@ function App() {
           return;
         }
 
+        currentRoomDisplayNameRef.current = displayName;
         setActiveRoomCode(response.roomCode);
         setRoomConnectionStatus("connected");
         setConnectedUsersCount(response.count);
@@ -2426,9 +2527,7 @@ function App() {
         .filter((note, index) => note.zIndex !== notes[index].zIndex)
         .forEach(emitNoteUpdate);
       nextTextBoxes
-        .filter(
-          (textBox, index) => textBox.zIndex !== textBoxes[index].zIndex,
-        )
+        .filter((textBox, index) => textBox.zIndex !== textBoxes[index].zIndex)
         .forEach(emitTextBoxUpdate);
       nextShapes
         .filter((shape, index) => shape.zIndex !== shapes[index].zIndex)
@@ -3321,6 +3420,13 @@ function App() {
       users: RoomUser[];
       count: number;
     }) => {
+      if (
+        !activeRoomCodeRef.current ||
+        payload.roomCode !== activeRoomCodeRef.current
+      ) {
+        return;
+      }
+
       setActiveRoomCode(payload.roomCode);
       setRoomConnectionStatus("connected");
       setRoomUsers(payload.users);
@@ -3355,6 +3461,8 @@ function App() {
     const handleDisconnect = () => {
       if (activeRoomCodeRef.current) {
         setRoomConnectionStatus("disconnected");
+        setRemoteCursors({});
+        setRemoteMarquees({});
 
         if (!hasShownDisconnectToastRef.current) {
           hasShownDisconnectToastRef.current = true;
@@ -3376,9 +3484,7 @@ function App() {
 
     const handleReconnect = () => {
       if (activeRoomCodeRef.current) {
-        setRoomConnectionStatus("connected");
-        resetConnectionToastGuards();
-        showSuccessToast("Reconnected");
+        rejoinActiveRoomAfterReconnect();
       }
     };
 
@@ -3406,7 +3512,7 @@ function App() {
       socket.io.off("reconnect", handleReconnect);
       socket.io.off("reconnect_failed", handleReconnectFailed);
     };
-  }, [resetConnectionToastGuards, showRoomErrorToast, showSuccessToast]);
+  }, [rejoinActiveRoomAfterReconnect, showRoomErrorToast]);
 
   useEffect(() => {
     return () => {
@@ -3923,27 +4029,36 @@ function App() {
           <span>{successToastMessage}</span>
         </div>
       )}
+      {isRoomErrorToastVisible &&
+        roomError &&
+        (() => {
+          const isReconnectingToast = roomError === "Reconnecting...";
 
-      {isRoomErrorToastVisible && roomError && (
-        <div
-          className="room-error-toast"
-          key={roomErrorToastKey}
-          role="alert"
-          aria-live="assertive"
-        >
-          <svg
-            className="room-error-toast-icon"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path d="M12 8v5" />
-            <path d="M12 17h.01" />
-            <path d="M10.3 4.3 2.8 17.2A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-2.8L13.7 4.3a2 2 0 0 0-3.4 0z" />
-          </svg>
-          <span>{roomError}</span>
-        </div>
-      )}
+          return (
+            <div
+              className={`room-error-toast${
+                isReconnectingToast ? " is-reconnecting-toast" : ""
+              }`}
+              key={roomErrorToastKey}
+              role={isReconnectingToast ? "status" : "alert"}
+              aria-live={isReconnectingToast ? "polite" : "assertive"}
+            >
+              {!isReconnectingToast && (
+                <svg
+                  className="room-error-toast-icon"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path d="M12 8v5" />
+                  <path d="M12 17h.01" />
+                  <path d="M10.3 4.3 2.8 17.2A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-2.8L13.7 4.3a2 2 0 0 0-3.4 0z" />
+                </svg>
+              )}
 
+              <span>{roomError}</span>
+            </div>
+          );
+        })()}
       <section className="workspace" aria-label="Whiteboard workspace">
         <div className="canvas-shell">
           <WhiteboardCanvas
@@ -4244,6 +4359,18 @@ function App() {
           >
             <ToolIcon name="trash" />
           </button>
+
+          {activeRoomCode && roomConnectionStatus !== "local" && (
+            <button
+              className="tool-button leave-room-button has-tooltip"
+              type="button"
+              aria-label="Leave room"
+              data-tooltip="Leave room"
+              onClick={leaveRoom}
+            >
+              <ToolIcon name="leave" />
+            </button>
+          )}
         </nav>
       </section>
 

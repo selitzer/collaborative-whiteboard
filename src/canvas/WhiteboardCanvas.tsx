@@ -224,6 +224,7 @@ const DEFAULT_SHAPE_WIDTH = 180;
 const DEFAULT_SHAPE_HEIGHT = 120;
 const DEFAULT_SHAPE_TEXT = "";
 const MIN_SHAPE_WIDTH = 40;
+const TOPBAR_HEIGHT = 48;
 const MIN_SHAPE_HEIGHT = 40;
 const DEFAULT_NOTE_COLOR = "#fff2a8";
 const NOTE_TEXT_COLOR = "#2f2a1f";
@@ -245,6 +246,7 @@ const CONTEXT_SUBMENU_HEIGHT = 140;
 const CONTEXT_SUBMENU_GAP = 10;
 const CONTEXT_SUBMENU_TRIGGER_OFFSET = 104;
 const CONTEXT_MENU_SAFE_PADDING = 12;
+const DRAG_VISIBLE_MARGIN = 40;
 const CENTER_ANIMATION_MS = 180;
 const SHAPE_FILL_COLORS = [
   { name: "No fill", value: "transparent" },
@@ -291,6 +293,44 @@ const TEXT_COLORS = [
 const DEFAULT_TEXT_COLOR = "#1f2937";
 const DEFAULT_FONT_WEIGHT: TextBox["fontWeight"] = "bold";
 const DEFAULT_TEXT_ALIGN: TextBox["textAlign"] = "center";
+
+const isLightColor = (color: string) => {
+  const normalizedColor = color.trim().toLowerCase();
+
+  if (!normalizedColor || normalizedColor === "transparent") {
+    return false;
+  }
+
+  let red: number;
+  let green: number;
+  let blue: number;
+
+  if (/^#[0-9a-f]{3}$/.test(normalizedColor)) {
+    red = parseInt(normalizedColor[1] + normalizedColor[1], 16);
+    green = parseInt(normalizedColor[2] + normalizedColor[2], 16);
+    blue = parseInt(normalizedColor[3] + normalizedColor[3], 16);
+  } else if (/^#[0-9a-f]{6}$/.test(normalizedColor)) {
+    red = parseInt(normalizedColor.slice(1, 3), 16);
+    green = parseInt(normalizedColor.slice(3, 5), 16);
+    blue = parseInt(normalizedColor.slice(5, 7), 16);
+  } else {
+    const rgbMatch = normalizedColor.match(
+      /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/,
+    );
+
+    if (!rgbMatch) {
+      return false;
+    }
+
+    red = Number(rgbMatch[1]);
+    green = Number(rgbMatch[2]);
+    blue = Number(rgbMatch[3]);
+  }
+
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+
+  return luminance > 0.72;
+};
 
 type WhiteboardCanvasProps = {
   activeTool: ActiveTool;
@@ -2525,6 +2565,58 @@ const WhiteboardCanvas = forwardRef<
     };
   };
 
+  const getVisibleBoardBounds = () => ({
+    left: -viewport.x / actualScale,
+    top: (-viewport.y + TOPBAR_HEIGHT) / actualScale,
+    right: (-viewport.x + size.width) / actualScale,
+    bottom: (-viewport.y + size.height) / actualScale,
+  });
+
+  const clampDragDeltaToVisibleViewport = (
+    bounds: NoteBounds,
+    deltaX: number,
+    deltaY: number,
+  ) => {
+    const visibleBounds = getVisibleBoardBounds();
+    let nextDeltaX = deltaX;
+    let nextDeltaY = deltaY;
+
+    if (bounds.x + bounds.width + nextDeltaX < visibleBounds.left + DRAG_VISIBLE_MARGIN) {
+      nextDeltaX = visibleBounds.left + DRAG_VISIBLE_MARGIN - (bounds.x + bounds.width);
+    }
+
+    if (bounds.x + nextDeltaX > visibleBounds.right - DRAG_VISIBLE_MARGIN) {
+      nextDeltaX = visibleBounds.right - DRAG_VISIBLE_MARGIN - bounds.x;
+    }
+
+    if (bounds.y + bounds.height + nextDeltaY < visibleBounds.top + DRAG_VISIBLE_MARGIN) {
+      nextDeltaY = visibleBounds.top + DRAG_VISIBLE_MARGIN - (bounds.y + bounds.height);
+    }
+
+    if (bounds.y + nextDeltaY > visibleBounds.bottom - DRAG_VISIBLE_MARGIN) {
+      nextDeltaY = visibleBounds.bottom - DRAG_VISIBLE_MARGIN - bounds.y;
+    }
+
+    return { deltaX: nextDeltaX, deltaY: nextDeltaY };
+  };
+
+  const clampObjectPositionToVisibleViewport = (
+    bounds: NoteBounds,
+    nextX: number,
+    nextY: number,
+  ) => {
+    const { deltaX, deltaY } = clampDragDeltaToVisibleViewport(
+      bounds,
+      nextX - bounds.x,
+      nextY - bounds.y,
+    );
+
+    return {
+      x: bounds.x + deltaX,
+      y: bounds.y + deltaY,
+    };
+  };
+
   const getSelectedGroupBounds = (
     selectedLines: DrawnLine[],
     selectedNotes: StickyNote[],
@@ -3509,31 +3601,55 @@ const WhiteboardCanvas = forwardRef<
                       onCursorMove(cursorPoint);
                     }
                     if (hasMultipleSelection && isSelected && groupDragStart) {
-                      onPreviewMoveSelectedObjects(
+                      const clampedDelta = clampDragDeltaToVisibleViewport(
+                        selectedGroupBounds ?? note,
                         event.target.x() - groupDragStart.x,
                         event.target.y() - groupDragStart.y,
+                      );
+                      event.target.position({
+                        x: groupDragStart.x + clampedDelta.deltaX,
+                        y: groupDragStart.y + clampedDelta.deltaY,
+                      });
+                      onPreviewMoveSelectedObjects(
+                        clampedDelta.deltaX,
+                        clampedDelta.deltaY,
                         selectedIds,
                       );
                       return;
                     }
 
+                    const clampedPosition = clampObjectPositionToVisibleViewport(
+                      note,
+                      event.target.x(),
+                      event.target.y(),
+                    );
+                    event.target.position(clampedPosition);
                     onPreviewMoveNote({
                       ...note,
-                      x: event.target.x(),
-                      y: event.target.y(),
+                      ...clampedPosition,
                     });
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
                     setStageCursor(event, "auto");
                     if (groupDragStart && hasMultipleSelection && isSelected) {
-                      onMoveSelectedObjects(
+                      const clampedDelta = clampDragDeltaToVisibleViewport(
+                        selectedGroupBounds ?? note,
                         event.target.x() - groupDragStart.x,
                         event.target.y() - groupDragStart.y,
+                      );
+                      onMoveSelectedObjects(
+                        clampedDelta.deltaX,
+                        clampedDelta.deltaY,
                         selectedIds,
                       );
                     } else {
-                      onMoveNote(note.id, event.target.x(), event.target.y());
+                      const clampedPosition = clampObjectPositionToVisibleViewport(
+                        note,
+                        event.target.x(),
+                        event.target.y(),
+                      );
+                      onMoveNote(note.id, clampedPosition.x, clampedPosition.y);
                     }
                     setGroupDragStart(null);
                   }}
@@ -3762,18 +3878,32 @@ const WhiteboardCanvas = forwardRef<
                     }
 
                     if (groupDragStart && hasMultipleSelection && isSelected) {
-                      onPreviewMoveSelectedObjects(
+                      const clampedDelta = clampDragDeltaToVisibleViewport(
+                        selectedGroupBounds ?? shape,
                         event.target.x() - groupDragStart.x,
                         event.target.y() - groupDragStart.y,
+                      );
+                      event.target.position({
+                        x: groupDragStart.x + clampedDelta.deltaX,
+                        y: groupDragStart.y + clampedDelta.deltaY,
+                      });
+                      onPreviewMoveSelectedObjects(
+                        clampedDelta.deltaX,
+                        clampedDelta.deltaY,
                         selectedIds,
                       );
                       return;
                     }
 
+                    const clampedPosition = clampObjectPositionToVisibleViewport(
+                      getNormalizedBounds(shape),
+                      event.target.x(),
+                      event.target.y(),
+                    );
+                    event.target.position(clampedPosition);
                     onPreviewMoveShape({
                       ...shape,
-                      x: event.target.x(),
-                      y: event.target.y(),
+                      ...clampedPosition,
                     });
                   }}
                   onDragEnd={(event) => {
@@ -3781,13 +3911,27 @@ const WhiteboardCanvas = forwardRef<
                     setIsDraggingShape(false);
                     setStageCursor(event, "auto");
                     if (groupDragStart && hasMultipleSelection && isSelected) {
-                      onMoveSelectedObjects(
+                      const clampedDelta = clampDragDeltaToVisibleViewport(
+                        selectedGroupBounds ?? shape,
                         event.target.x() - groupDragStart.x,
                         event.target.y() - groupDragStart.y,
+                      );
+                      onMoveSelectedObjects(
+                        clampedDelta.deltaX,
+                        clampedDelta.deltaY,
                         selectedIds,
                       );
                     } else {
-                      onMoveShape(shape.id, event.target.x(), event.target.y());
+                      const clampedPosition = clampObjectPositionToVisibleViewport(
+                        getNormalizedBounds(shape),
+                        event.target.x(),
+                        event.target.y(),
+                      );
+                      onMoveShape(
+                        shape.id,
+                        clampedPosition.x,
+                        clampedPosition.y,
+                      );
                     }
                     setGroupDragStart(null);
                   }}
@@ -4136,34 +4280,58 @@ const WhiteboardCanvas = forwardRef<
                   }
 
                   if (hasMultipleSelection && isSelected && groupDragStart) {
-                    onPreviewMoveSelectedObjects(
+                    const clampedDelta = clampDragDeltaToVisibleViewport(
+                      selectedGroupBounds ?? textBox,
                       event.target.x() - groupDragStart.x,
                       event.target.y() - groupDragStart.y,
+                    );
+                    event.target.position({
+                      x: groupDragStart.x + clampedDelta.deltaX,
+                      y: groupDragStart.y + clampedDelta.deltaY,
+                    });
+                    onPreviewMoveSelectedObjects(
+                      clampedDelta.deltaX,
+                      clampedDelta.deltaY,
                       selectedIds,
                     );
                     return;
                   }
 
+                  const clampedPosition = clampObjectPositionToVisibleViewport(
+                    textBox,
+                    event.target.x(),
+                    event.target.y(),
+                  );
+                  event.target.position(clampedPosition);
                   onPreviewMoveTextBox({
                     ...textBox,
-                    x: event.target.x(),
-                    y: event.target.y(),
+                    ...clampedPosition,
                   });
                 }}
                 onDragEnd={(event) => {
                   event.cancelBubble = true;
                   setStageCursor(event, "auto");
                   if (groupDragStart && hasMultipleSelection && isSelected) {
-                    onMoveSelectedObjects(
+                    const clampedDelta = clampDragDeltaToVisibleViewport(
+                      selectedGroupBounds ?? textBox,
                       event.target.x() - groupDragStart.x,
                       event.target.y() - groupDragStart.y,
+                    );
+                    onMoveSelectedObjects(
+                      clampedDelta.deltaX,
+                      clampedDelta.deltaY,
                       selectedIds,
                     );
                   } else {
-                    onMoveTextBox(
-                      textBox.id,
+                    const clampedPosition = clampObjectPositionToVisibleViewport(
+                      textBox,
                       event.target.x(),
                       event.target.y(),
+                    );
+                    onMoveTextBox(
+                      textBox.id,
+                      clampedPosition.x,
+                      clampedPosition.y,
                     );
                   }
                   setGroupDragStart(null);
@@ -4375,25 +4543,44 @@ const WhiteboardCanvas = forwardRef<
                       return;
                     }
 
-                    const deltaX = event.target.x() - start.x;
-                    const deltaY = event.target.y() - start.y;
+                    const clampedDelta = clampDragDeltaToVisibleViewport(
+                      selectedSingleLineBounds,
+                      event.target.x() - start.x,
+                      event.target.y() - start.y,
+                    );
 
-                    setSelectionDragOffset({
-                      x: deltaX,
-                      y: deltaY,
+                    event.target.position({
+                      x: start.x + clampedDelta.deltaX,
+                      y: start.y + clampedDelta.deltaY,
                     });
 
-                    onPreviewMoveSelectedObjects(deltaX, deltaY, selectedIds);
+                    setSelectionDragOffset({
+                      x: clampedDelta.deltaX,
+                      y: clampedDelta.deltaY,
+                    });
+
+                    onPreviewMoveSelectedObjects(
+                      clampedDelta.deltaX,
+                      clampedDelta.deltaY,
+                      selectedIds,
+                    );
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
                     const start = selectionDragStartRef.current;
 
                     if (start) {
-                      const deltaX = event.target.x() - start.x;
-                      const deltaY = event.target.y() - start.y;
+                      const clampedDelta = clampDragDeltaToVisibleViewport(
+                        selectedSingleLineBounds,
+                        event.target.x() - start.x,
+                        event.target.y() - start.y,
+                      );
 
-                      onMoveSelectedObjects(deltaX, deltaY, selectedIds);
+                      onMoveSelectedObjects(
+                        clampedDelta.deltaX,
+                        clampedDelta.deltaY,
+                        selectedIds,
+                      );
                     }
 
                     selectionDragStartRef.current = null;
@@ -4471,25 +4658,44 @@ const WhiteboardCanvas = forwardRef<
                   onCursorMove(cursorPoint);
                 }
 
-                const deltaX = event.target.x() - start.x;
-                const deltaY = event.target.y() - start.y;
+                const clampedDelta = clampDragDeltaToVisibleViewport(
+                  selectedGroupBounds,
+                  event.target.x() - start.x,
+                  event.target.y() - start.y,
+                );
 
-                setSelectionDragOffset({
-                  x: deltaX,
-                  y: deltaY,
+                event.target.position({
+                  x: start.x + clampedDelta.deltaX,
+                  y: start.y + clampedDelta.deltaY,
                 });
 
-                onPreviewMoveSelectedObjects(deltaX, deltaY, selectedIds);
+                setSelectionDragOffset({
+                  x: clampedDelta.deltaX,
+                  y: clampedDelta.deltaY,
+                });
+
+                onPreviewMoveSelectedObjects(
+                  clampedDelta.deltaX,
+                  clampedDelta.deltaY,
+                  selectedIds,
+                );
               }}
               onDragEnd={(event) => {
                 event.cancelBubble = true;
                 const start = selectionDragStartRef.current;
 
                 if (start) {
-                  const deltaX = event.target.x() - start.x;
-                  const deltaY = event.target.y() - start.y;
+                  const clampedDelta = clampDragDeltaToVisibleViewport(
+                    selectedGroupBounds,
+                    event.target.x() - start.x,
+                    event.target.y() - start.y,
+                  );
 
-                  onMoveSelectedObjects(deltaX, deltaY, selectedIds);
+                  onMoveSelectedObjects(
+                    clampedDelta.deltaX,
+                    clampedDelta.deltaY,
+                    selectedIds,
+                  );
                 }
 
                 selectionDragStartRef.current = null;
@@ -4571,7 +4777,11 @@ const WhiteboardCanvas = forwardRef<
             }
           >
             <span
-              className="text-toolbar-color"
+              className={
+                isLightColor(renderedSelectedTextBox.textColor)
+                  ? "text-toolbar-color is-light-color"
+                  : "text-toolbar-color"
+              }
               style={{ color: renderedSelectedTextBox.textColor }}
             >
               A
@@ -4858,7 +5068,11 @@ const WhiteboardCanvas = forwardRef<
                   }
                 >
                   <span
-                    className="text-toolbar-color"
+                    className={
+                      isLightColor(renderedSelectedShape.textColor)
+                        ? "text-toolbar-color is-light-color"
+                        : "text-toolbar-color"
+                    }
                     style={{ color: renderedSelectedShape.textColor }}
                   >
                     A
