@@ -26,6 +26,15 @@ export type WhiteboardCanvasHandle = {
   resetZoom: () => void;
 };
 
+export type RemoteCursor = {
+  socketId: string;
+  name: string;
+  x: number;
+  y: number;
+  color: string;
+  updatedAt: number;
+};
+
 export type DrawnLine = {
   id: string;
   points: number[];
@@ -276,6 +285,9 @@ type WhiteboardCanvasProps = {
   selectedShapeType: Shape["type"] | null;
   penColor: string;
   penStrokeWidth: number;
+  remoteCursors: RemoteCursor[];
+  onCursorMove: (point: { x: number; y: number }) => void;
+  onCursorLeave: () => void;
   onLinesChange: (updater: (currentLines: DrawnLine[]) => DrawnLine[]) => void;
   onDrawingCommit: (previousLines: DrawnLine[]) => void;
   onEraseLine: (lineId: string) => void;
@@ -381,6 +393,9 @@ const WhiteboardCanvas = forwardRef<
     onLayerSelectedObjects,
     onShapePlaced,
     onZoomChange,
+    remoteCursors,
+    onCursorMove,
+    onCursorLeave,
   }: WhiteboardCanvasProps,
   ref,
 ) {
@@ -1495,6 +1510,11 @@ const WhiteboardCanvas = forwardRef<
   };
 
   const handleMouseMove = (event: KonvaEventObject<MouseEvent>) => {
+    const cursorPoint = getBoardPoint(event);
+
+    if (cursorPoint) {
+      onCursorMove(cursorPoint);
+    }
     if (draftShape) {
       const point = getBoardPoint(event);
 
@@ -3110,7 +3130,10 @@ const WhiteboardCanvas = forwardRef<
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={stopDrawing}
-        onMouseLeave={stopDrawing}
+        onMouseLeave={() => {
+          onCursorLeave();
+          stopDrawing();
+        }}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
       >
@@ -4117,6 +4140,40 @@ const WhiteboardCanvas = forwardRef<
           )}
         </Layer>
       </Stage>
+
+      <div className="remote-cursor-layer" aria-hidden="true">
+        {remoteCursors.map((cursor) => (
+          <div
+            className="remote-cursor"
+            key={cursor.socketId}
+            style={{
+              left: viewport.x + cursor.x * actualScale,
+              top: viewport.y + cursor.y * actualScale,
+            }}
+          >
+            <svg
+              className="remote-cursor-pointer"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 3 18 14h-7l3 7-3 1.5-3-7-4 5.5V3z"
+                fill={cursor.color}
+                stroke="#ffffff"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+            </svg>
+
+            <span
+              className="remote-cursor-name"
+              style={{ backgroundColor: cursor.color }}
+            >
+              {cursor.name}
+            </span>
+          </div>
+        ))}
+      </div>
 
       {renderedSelectedTextBox && canSelectObjects && !groupDragStart && (
         <div

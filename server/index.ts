@@ -73,7 +73,9 @@ const normalizeBoardTitle = (title?: string) => {
   return title?.trim() || DEFAULT_BOARD_TITLE;
 };
 
-const createEmptyBoardState = (title = DEFAULT_BOARD_TITLE): RoomBoardState => ({
+const createEmptyBoardState = (
+  title = DEFAULT_BOARD_TITLE,
+): RoomBoardState => ({
   version: 1,
   title: normalizeBoardTitle(title),
   lines: [],
@@ -94,8 +96,7 @@ const normalizeRoomBoardState = (
   const title = normalizeBoardTitle(boardData.title ?? fallbackTitle);
 
   return {
-    version:
-      typeof boardData.version === "number" ? boardData.version : 1,
+    version: typeof boardData.version === "number" ? boardData.version : 1,
     title,
     lines: Array.isArray(boardData.lines) ? boardData.lines : [],
     notes: Array.isArray(boardData.notes) ? boardData.notes : [],
@@ -146,6 +147,11 @@ const leaveCurrentRoom = (socket: Socket) => {
 
   const users = rooms.get(currentRoomCode) ?? [];
   const nextUsers = users.filter((user) => user.socketId !== socket.id);
+
+  socket.to(currentRoomCode).emit("board:cursor:leave", {
+    roomCode: currentRoomCode,
+    socketId: socket.id,
+  });
 
   socket.leave(currentRoomCode);
   socketRooms.delete(socket.id);
@@ -270,13 +276,21 @@ io.on("connection", (socket) => {
   socket.on("board:line:create", ({ roomCode, line }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isDrawnLine(line)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isDrawnLine(line)
+    ) {
       return;
     }
 
     const boardState = getRoomBoard(normalizedRoomCode);
 
-    if (!boardState.lines.some((currentLine) => isDrawnLine(currentLine) && currentLine.id === line.id)) {
+    if (
+      !boardState.lines.some(
+        (currentLine) => isDrawnLine(currentLine) && currentLine.id === line.id,
+      )
+    ) {
       boardState.lines = [...boardState.lines, line];
     }
 
@@ -289,14 +303,20 @@ io.on("connection", (socket) => {
   socket.on("board:line:update", ({ roomCode, line }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isDrawnLine(line)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isDrawnLine(line)
+    ) {
       return;
     }
 
     const boardState = getRoomBoard(normalizedRoomCode);
 
     boardState.lines = boardState.lines.map((currentLine) =>
-      isDrawnLine(currentLine) && currentLine.id === line.id ? line : currentLine,
+      isDrawnLine(currentLine) && currentLine.id === line.id
+        ? line
+        : currentLine,
     );
 
     socket.to(normalizedRoomCode).emit("board:line:update", {
@@ -308,7 +328,11 @@ io.on("connection", (socket) => {
   socket.on("board:line:delete", ({ roomCode, lineId }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || typeof lineId !== "string") {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      typeof lineId !== "string"
+    ) {
       return;
     }
 
@@ -327,7 +351,11 @@ io.on("connection", (socket) => {
   socket.on("board:lines:delete", ({ roomCode, lineIds }) => {
     const normalizedRoomCode = roomCode?.trim().toUpperCase();
 
-    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !Array.isArray(lineIds)) {
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !Array.isArray(lineIds)
+    ) {
       return;
     }
 
@@ -342,12 +370,56 @@ io.on("connection", (socket) => {
     const boardState = getRoomBoard(normalizedRoomCode);
 
     boardState.lines = boardState.lines.filter(
-      (currentLine) => !isDrawnLine(currentLine) || !lineIdSet.has(currentLine.id),
+      (currentLine) =>
+        !isDrawnLine(currentLine) || !lineIdSet.has(currentLine.id),
     );
 
     socket.to(normalizedRoomCode).emit("board:lines:delete", {
       roomCode: normalizedRoomCode,
       lineIds: Array.from(lineIdSet),
+    });
+  });
+
+  socket.on("board:cursor:update", ({ roomCode, x, y }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      typeof x !== "number" ||
+      typeof y !== "number"
+    ) {
+      return;
+    }
+
+    const users = rooms.get(normalizedRoomCode) ?? [];
+    const user = users.find(
+      (currentUser) => currentUser.socketId === socket.id,
+    );
+
+    if (!user) {
+      return;
+    }
+
+    socket.to(normalizedRoomCode).emit("board:cursor:update", {
+      roomCode: normalizedRoomCode,
+      socketId: socket.id,
+      name: user.name,
+      x,
+      y,
+    });
+  });
+
+  socket.on("board:cursor:leave", ({ roomCode }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+      return;
+    }
+
+    socket.to(normalizedRoomCode).emit("board:cursor:leave", {
+      roomCode: normalizedRoomCode,
+      socketId: socket.id,
     });
   });
 

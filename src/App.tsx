@@ -8,6 +8,7 @@ import type {
   TextBox,
   Shape,
   WhiteboardCanvasHandle,
+  RemoteCursor,
 } from "./canvas/WhiteboardCanvas";
 import type { ReactNode } from "react";
 import {
@@ -530,13 +531,17 @@ function getUserInitial(name: string) {
   return getDisplayName(name).charAt(0).toUpperCase() || "G";
 }
 
-function getStableUserColor(user: RoomUser, index: number) {
-  const colorIndex = Array.from(user.socketId || String(index)).reduce(
+function getStableColorFromKey(key: string, fallbackIndex = 0) {
+  const colorIndex = Array.from(key || String(fallbackIndex)).reduce(
     (total, character) => total + character.charCodeAt(0),
-    index,
+    fallbackIndex,
   );
 
   return USER_COLORS[colorIndex % USER_COLORS.length];
+}
+
+function getStableUserColor(user: RoomUser, index: number) {
+  return getStableColorFromKey(user.socketId, index);
 }
 
 function App() {
@@ -557,6 +562,9 @@ function App() {
     Shape["type"] | null
   >(null);
   const [selectedPenColor, setSelectedPenColor] = useState("#1f2937");
+  const [remoteCursors, setRemoteCursors] = useState<
+    Record<string, RemoteCursor>
+  >({});
   const [selectedPenStrokeWidth, setSelectedPenStrokeWidth] = useState(3);
   const [activeTool, setActiveTool] = useState<ActiveTool>("select");
   const [canvasZoom, setCanvasZoom] = useState(1);
@@ -585,6 +593,7 @@ function App() {
   const [roomConnectionStatus, setRoomConnectionStatus] =
     useState<RoomConnectionStatus>("local");
   const menuRef = useRef<HTMLDivElement>(null);
+  const lastCursorEmitRef = useRef(0);
   const stickyColorPickerRef = useRef<HTMLDivElement>(null);
   const penSettingsRef = useRef<HTMLDivElement>(null);
   const shapePickerRef = useRef<HTMLDivElement>(null);
@@ -594,8 +603,7 @@ function App() {
   const successToastTimeoutRef = useRef<number | null>(null);
   const roomErrorToastTimeoutRef = useRef<number | null>(null);
   const activeRoomCodeRef = useRef<string | null>(null);
-  const roomConnectionStatusRef =
-    useRef<RoomConnectionStatus>("local");
+  const roomConnectionStatusRef = useRef<RoomConnectionStatus>("local");
   const isEditingTitleRef = useRef(false);
   const hasShownDisconnectToastRef = useRef(false);
   const hasShownReconnectingToastRef = useRef(false);
@@ -668,6 +676,46 @@ function App() {
       roomErrorToastTimeoutRef.current = null;
     }, 2000);
   }, []);
+
+  const canEmitCursorEvents = useCallback(() => {
+    return (
+      Boolean(activeRoomCodeRef.current) &&
+      roomConnectionStatusRef.current === "connected"
+    );
+  }, []);
+
+  const handleCursorMove = useCallback(
+    (point: { x: number; y: number }) => {
+      if (!canEmitCursorEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastCursorEmitRef.current < 40) {
+        return;
+      }
+
+      lastCursorEmitRef.current = now;
+
+      socket.emit("board:cursor:update", {
+        roomCode: activeRoomCodeRef.current,
+        x: point.x,
+        y: point.y,
+      });
+    },
+    [canEmitCursorEvents],
+  );
+
+  const handleCursorLeave = useCallback(() => {
+    if (!canEmitCursorEvents() || !activeRoomCodeRef.current) {
+      return;
+    }
+
+    socket.emit("board:cursor:leave", {
+      roomCode: activeRoomCodeRef.current,
+    });
+  }, [canEmitCursorEvents]);
 
   const canEmitBoardLineEvents = useCallback(() => {
     return (
@@ -1096,16 +1144,19 @@ function App() {
     [emitLineCreate, lines, notes, shapes, textBoxes],
   );
 
-  const handleEraseLine = useCallback((lineId: string) => {
-    setLines((currentLines) => {
-      if (!currentLines.some((line) => line.id === lineId)) {
-        return currentLines;
-      }
+  const handleEraseLine = useCallback(
+    (lineId: string) => {
+      setLines((currentLines) => {
+        if (!currentLines.some((line) => line.id === lineId)) {
+          return currentLines;
+        }
 
-      emitLineDelete(lineId);
-      return currentLines.filter((line) => line.id !== lineId);
-    });
-  }, [emitLineDelete]);
+        emitLineDelete(lineId);
+        return currentLines.filter((line) => line.id !== lineId);
+      });
+    },
+    [emitLineDelete],
+  );
 
   const handleEraseCommit = useCallback(
     (previousLines: DrawnLine[]) => {
@@ -2097,31 +2148,36 @@ function App() {
     setIsEditingTitle(true);
   };
 
-  const openRecentBoard = useCallback(async (board: RecentBoard) => {
-    setIsMenuOpen(false);
+  const openRecentBoard = useCallback(
+    async (board: RecentBoard) => {
+      setIsMenuOpen(false);
 
-    const result = await window.whiteboardAPI?.loadBoardFromPath(board.path);
+      const result = await window.whiteboardAPI?.loadBoardFromPath(board.path);
 
-    if (!result || result.canceled || !result.data) {
+      if (!result || result.canceled || !result.data) {
+        setRecentBoards((currentBoards) =>
+          currentBoards.filter(
+            (recentBoard) => recentBoard.path !== board.path,
+          ),
+        );
+        return;
+      }
+
+      const title = result.data.title || "Untitled Board";
+
+      applyBoardData(result.data);
+      setIsDirty(false);
+
       setRecentBoards((currentBoards) =>
-        currentBoards.filter((recentBoard) => recentBoard.path !== board.path),
+        upsertRecentBoard(currentBoards, {
+          name: title,
+          path: board.path,
+          savedAt: result.data?.savedAt || new Date().toISOString(),
+        }),
       );
-      return;
-    }
-
-    const title = result.data.title || "Untitled Board";
-
-    applyBoardData(result.data);
-    setIsDirty(false);
-
-    setRecentBoards((currentBoards) =>
-      upsertRecentBoard(currentBoards, {
-        name: title,
-        path: board.path,
-        savedAt: result.data?.savedAt || new Date().toISOString(),
-      }),
-    );
-  }, [applyBoardData]);
+    },
+    [applyBoardData],
+  );
 
   useEffect(() => {
     const storedBoards = localStorage.getItem(RECENT_BOARDS_STORAGE_KEY);
@@ -2166,6 +2222,86 @@ function App() {
       });
     });
   }, [getBoardFileData, isDirty]);
+
+  useEffect(() => {
+    const handleRemoteCursorUpdate = (payload: {
+      roomCode: string;
+      socketId: string;
+      name: string;
+      x: number;
+      y: number;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      if (payload.socketId === socket.id) {
+        return;
+      }
+
+      setRemoteCursors((currentCursors) => ({
+        ...currentCursors,
+        [payload.socketId]: {
+          socketId: payload.socketId,
+          name: getDisplayName(payload.name),
+          x: payload.x,
+          y: payload.y,
+          color: getStableColorFromKey(payload.socketId),
+          updatedAt: Date.now(),
+        },
+      }));
+    };
+
+    const handleRemoteCursorLeave = (payload: {
+      roomCode: string;
+      socketId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setRemoteCursors((currentCursors) => {
+        const nextCursors = { ...currentCursors };
+        delete nextCursors[payload.socketId];
+        return nextCursors;
+      });
+    };
+
+    socket.on("board:cursor:update", handleRemoteCursorUpdate);
+    socket.on("board:cursor:leave", handleRemoteCursorLeave);
+
+    return () => {
+      socket.off("board:cursor:update", handleRemoteCursorUpdate);
+      socket.off("board:cursor:leave", handleRemoteCursorLeave);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      roomConnectionStatus === "local" ||
+      roomConnectionStatus === "disconnected"
+    ) {
+      setRemoteCursors({});
+    }
+  }, [roomConnectionStatus]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+
+      setRemoteCursors((currentCursors) => {
+        const nextCursors = Object.fromEntries(
+          Object.entries(currentCursors).filter(
+            ([, cursor]) => now - cursor.updatedAt < 5000,
+          ),
+        );
+
+        return nextCursors;
+      });
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     activeRoomCodeRef.current = activeRoomCode;
@@ -2660,7 +2796,10 @@ function App() {
     roomConnectionStatus !== "local" &&
     roomUsers.length > 0;
   const visibleRoomUsers = roomUsers.slice(0, 6);
-  const hiddenRoomUserCount = Math.max(roomUsers.length - visibleRoomUsers.length, 0);
+  const hiddenRoomUserCount = Math.max(
+    roomUsers.length - visibleRoomUsers.length,
+    0,
+  );
 
   return (
     <main className="app-shell">
@@ -2756,7 +2895,6 @@ function App() {
                   </button>
                 ))}
               </div>
-
             </div>
           )}
         </div>
@@ -2918,6 +3056,9 @@ function App() {
             notes={notes}
             shapes={shapes}
             textBoxes={textBoxes}
+            remoteCursors={Object.values(remoteCursors)}
+            onCursorMove={handleCursorMove}
+            onCursorLeave={handleCursorLeave}
             selectedStickyColor={selectedStickyColor}
             selectedShapeType={selectedShapeType}
             penColor={selectedPenColor}
@@ -3334,8 +3475,8 @@ function App() {
               Joining this room will replace your current board. Continue?
             </h2>
             <p>
-              Your current board will be replaced by the collaborative room board.
-              Save it first if you want to keep a local copy.
+              Your current board will be replaced by the collaborative room
+              board. Save it first if you want to keep a local copy.
             </p>
 
             <div className="modal-actions">
