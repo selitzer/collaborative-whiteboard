@@ -8,12 +8,17 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.env
+.env.local
+.env.*
+*.local
+
+# Build outputs
 dist
 dist-ssr
 dist-electron
-.env
-.env.local
-*.local
+release
+out
 
 # Editor directories and files
 .vscode/*
