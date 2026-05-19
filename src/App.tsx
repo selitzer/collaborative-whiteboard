@@ -9,6 +9,7 @@ import type {
   Shape,
   WhiteboardCanvasHandle,
   RemoteCursor,
+  RemoteMarqueeSelection,
 } from "./canvas/WhiteboardCanvas";
 import type { ReactNode } from "react";
 import {
@@ -540,8 +541,8 @@ function getStableColorFromKey(key: string, fallbackIndex = 0) {
   return USER_COLORS[colorIndex % USER_COLORS.length];
 }
 
-function getStableUserColor(user: RoomUser, index: number) {
-  return getStableColorFromKey(user.socketId, index);
+function getStableUserColor(user: RoomUser) {
+  return getStableColorFromKey(user.socketId);
 }
 
 function App() {
@@ -553,6 +554,9 @@ function App() {
   const [isJoinReplaceConfirmOpen, setIsJoinReplaceConfirmOpen] =
     useState(false);
   const [isStickyColorPickerOpen, setIsStickyColorPickerOpen] = useState(false);
+  const [remoteMarquees, setRemoteMarquees] = useState<
+    Record<string, RemoteMarqueeSelection>
+  >({});
   const [isPenSettingsOpen, setIsPenSettingsOpen] = useState(false);
   const [isShapePickerOpen, setIsShapePickerOpen] = useState(false);
   const [selectedStickyColor, setSelectedStickyColor] = useState<string | null>(
@@ -608,9 +612,12 @@ function App() {
   const hasShownDisconnectToastRef = useRef(false);
   const hasShownReconnectingToastRef = useRef(false);
   const hasShownReconnectFailedToastRef = useRef(false);
+  const lastPreviewLineDragEmitRef = useRef(0);
   const hasShownConnectErrorToastRef = useRef(false);
+  const roomUsersRef = useRef<RoomUser[]>([]);
   const skipTitleBlurSaveRef = useRef(false);
   const hasEditedTitleRef = useRef(false);
+  const lastMarqueeEmitRef = useRef(0);
   const whiteboardCanvasRef = useRef<WhiteboardCanvasHandle>(null);
   const canUndo = undoHistory.length > 0;
   const canRedo = redoHistory.length > 0;
@@ -713,6 +720,41 @@ function App() {
     }
 
     socket.emit("board:cursor:leave", {
+      roomCode: activeRoomCodeRef.current,
+    });
+  }, [canEmitCursorEvents]);
+
+  const handleMarqueeUpdate = useCallback(
+    (selection: {
+      start: { x: number; y: number };
+      current: { x: number; y: number };
+    }) => {
+      if (!canEmitCursorEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastMarqueeEmitRef.current < 40) {
+        return;
+      }
+
+      lastMarqueeEmitRef.current = now;
+
+      socket.emit("board:marquee:update", {
+        roomCode: activeRoomCodeRef.current,
+        selection,
+      });
+    },
+    [canEmitCursorEvents],
+  );
+
+  const handleMarqueeEnd = useCallback(() => {
+    if (!canEmitCursorEvents() || !activeRoomCodeRef.current) {
+      return;
+    }
+
+    socket.emit("board:marquee:end", {
       roomCode: activeRoomCodeRef.current,
     });
   }, [canEmitCursorEvents]);
@@ -1138,7 +1180,7 @@ function App() {
       setRedoHistory([]);
 
       if (createdLine) {
-        emitLineCreate(createdLine);
+        emitLineUpdate(createdLine);
       }
     },
     [emitLineCreate, lines, notes, shapes, textBoxes],
@@ -1635,6 +1677,37 @@ function App() {
       );
     },
     [lines, notes, shapes, textBoxes],
+  );
+
+  const handlePreviewMoveSelectedObjects = useCallback(
+    (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
+      if (selectedIds.lineIds.length === 0) {
+        return;
+      }
+
+      if (!canEmitBoardLineEvents()) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastPreviewLineDragEmitRef.current < 40) {
+        return;
+      }
+
+      lastPreviewLineDragEmitRef.current = now;
+
+      lines
+        .filter((line) => selectedIds.lineIds.includes(line.id))
+        .map((line) => ({
+          ...line,
+          points: line.points.map((point, index) =>
+            index % 2 === 0 ? point + deltaX : point + deltaY,
+          ),
+        }))
+        .forEach(emitLineUpdate);
+    },
+    [canEmitBoardLineEvents, emitLineUpdate, lines],
   );
 
   const handleMoveSelectedObjects = useCallback(
@@ -2204,6 +2277,67 @@ function App() {
   }, []);
 
   useEffect(() => {
+    roomUsersRef.current = roomUsers;
+  }, [roomUsers]);
+
+  useEffect(() => {
+    const handleRemoteMarqueeUpdate = (payload: {
+      roomCode: string;
+      socketId: string;
+      selection: {
+        start: { x: number; y: number };
+        current: { x: number; y: number };
+      };
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      if (payload.socketId === socket.id) {
+        return;
+      }
+
+      const user = roomUsersRef.current.find(
+        (currentUser) => currentUser.socketId === payload.socketId,
+      );
+
+      setRemoteMarquees((currentMarquees) => ({
+        ...currentMarquees,
+        [payload.socketId]: {
+          socketId: payload.socketId,
+          name: getDisplayName(user?.name ?? "Guest"),
+          color: getStableColorFromKey(payload.socketId),
+          selection: payload.selection,
+          updatedAt: Date.now(),
+        },
+      }));
+    };
+
+    const handleRemoteMarqueeEnd = (payload: {
+      roomCode: string;
+      socketId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setRemoteMarquees((currentMarquees) => {
+        const nextMarquees = { ...currentMarquees };
+        delete nextMarquees[payload.socketId];
+        return nextMarquees;
+      });
+    };
+
+    socket.on("board:marquee:update", handleRemoteMarqueeUpdate);
+    socket.on("board:marquee:end", handleRemoteMarqueeEnd);
+
+    return () => {
+      socket.off("board:marquee:update", handleRemoteMarqueeUpdate);
+      socket.off("board:marquee:end", handleRemoteMarqueeEnd);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!hasLoadedRecentBoards) {
       return;
     }
@@ -2282,8 +2416,27 @@ function App() {
       roomConnectionStatus === "disconnected"
     ) {
       setRemoteCursors({});
+      setRemoteMarquees({});
     }
   }, [roomConnectionStatus]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+
+      setRemoteMarquees((currentMarquees) => {
+        const nextMarquees = Object.fromEntries(
+          Object.entries(currentMarquees).filter(
+            ([, marquee]) => now - marquee.updatedAt < 5000,
+          ),
+        );
+
+        return nextMarquees;
+      });
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -3057,6 +3210,9 @@ function App() {
             shapes={shapes}
             textBoxes={textBoxes}
             remoteCursors={Object.values(remoteCursors)}
+            remoteMarquees={Object.values(remoteMarquees)}
+            onMarqueeUpdate={handleMarqueeUpdate}
+            onMarqueeEnd={handleMarqueeEnd}
             onCursorMove={handleCursorMove}
             onCursorLeave={handleCursorLeave}
             selectedStickyColor={selectedStickyColor}
@@ -3065,6 +3221,8 @@ function App() {
             penStrokeWidth={selectedPenStrokeWidth}
             onLinesChange={handleLinesChange}
             onDrawingCommit={handleDrawingCommit}
+            onLiveLineStart={emitLineCreate}
+            onLiveLineUpdate={emitLineUpdate}
             onEraseLine={handleEraseLine}
             onEraseCommit={handleEraseCommit}
             onCreateNote={handleCreateNote}
@@ -3087,6 +3245,7 @@ function App() {
             onUpdateShapeStyle={handleUpdateShapeStyle}
             onDeleteShape={handleDeleteShape}
             onMoveSelectedObjects={handleMoveSelectedObjects}
+            onPreviewMoveSelectedObjects={handlePreviewMoveSelectedObjects}
             onDeleteSelectedObjects={handleDeleteSelectedObjects}
             onCreateObjectsBatch={handleCreateObjectsBatch}
             onLayerObject={handleLayerObject}
@@ -3098,7 +3257,7 @@ function App() {
 
         {shouldShowPresence && (
           <div className="presence-list" aria-label="Room users">
-            {visibleRoomUsers.map((user, index) => {
+            {visibleRoomUsers.map((user) => {
               const displayName = getDisplayName(user.name);
 
               return (
@@ -3108,7 +3267,7 @@ function App() {
                   key={user.socketId}
                   aria-label={displayName}
                   data-tooltip={displayName}
-                  style={{ backgroundColor: getStableUserColor(user, index) }}
+                  style={{ backgroundColor: getStableUserColor(user) }}
                 >
                   {getUserInitial(displayName)}
                 </button>

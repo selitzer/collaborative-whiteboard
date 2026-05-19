@@ -153,6 +153,11 @@ const leaveCurrentRoom = (socket: Socket) => {
     socketId: socket.id,
   });
 
+  socket.to(currentRoomCode).emit("board:marquee:end", {
+  roomCode: currentRoomCode,
+  socketId: socket.id,
+});
+
   socket.leave(currentRoomCode);
   socketRooms.delete(socket.id);
 
@@ -313,11 +318,19 @@ io.on("connection", (socket) => {
 
     const boardState = getRoomBoard(normalizedRoomCode);
 
-    boardState.lines = boardState.lines.map((currentLine) =>
-      isDrawnLine(currentLine) && currentLine.id === line.id
-        ? line
-        : currentLine,
+    const existingLineIndex = boardState.lines.findIndex(
+      (currentLine) => isDrawnLine(currentLine) && currentLine.id === line.id,
     );
+
+    if (existingLineIndex === -1) {
+      boardState.lines = [...boardState.lines, line];
+    } else {
+      boardState.lines = boardState.lines.map((currentLine) =>
+        isDrawnLine(currentLine) && currentLine.id === line.id
+          ? line
+          : currentLine,
+      );
+    }
 
     socket.to(normalizedRoomCode).emit("board:line:update", {
       roomCode: normalizedRoomCode,
@@ -418,6 +431,61 @@ io.on("connection", (socket) => {
     }
 
     socket.to(normalizedRoomCode).emit("board:cursor:leave", {
+      roomCode: normalizedRoomCode,
+      socketId: socket.id,
+    });
+  });
+
+  socket.on("board:marquee:update", ({ roomCode, selection }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !selection ||
+      typeof selection !== "object"
+    ) {
+      return;
+    }
+
+    const candidate = selection as {
+      start?: { x?: unknown; y?: unknown };
+      current?: { x?: unknown; y?: unknown };
+    };
+
+    if (
+      typeof candidate.start?.x !== "number" ||
+      typeof candidate.start?.y !== "number" ||
+      typeof candidate.current?.x !== "number" ||
+      typeof candidate.current?.y !== "number"
+    ) {
+      return;
+    }
+
+    socket.to(normalizedRoomCode).emit("board:marquee:update", {
+      roomCode: normalizedRoomCode,
+      socketId: socket.id,
+      selection: {
+        start: {
+          x: candidate.start.x,
+          y: candidate.start.y,
+        },
+        current: {
+          x: candidate.current.x,
+          y: candidate.current.y,
+        },
+      },
+    });
+  });
+
+  socket.on("board:marquee:end", ({ roomCode }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+      return;
+    }
+
+    socket.to(normalizedRoomCode).emit("board:marquee:end", {
       roomCode: normalizedRoomCode,
       socketId: socket.id,
     });

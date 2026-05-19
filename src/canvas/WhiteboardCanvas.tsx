@@ -35,6 +35,17 @@ export type RemoteCursor = {
   updatedAt: number;
 };
 
+export type RemoteMarqueeSelection = {
+  socketId: string;
+  name: string;
+  color: string;
+  selection: {
+    start: { x: number; y: number };
+    current: { x: number; y: number };
+  };
+  updatedAt: number;
+};
+
 export type DrawnLine = {
   id: string;
   points: number[];
@@ -286,10 +297,18 @@ type WhiteboardCanvasProps = {
   penColor: string;
   penStrokeWidth: number;
   remoteCursors: RemoteCursor[];
+  remoteMarquees: RemoteMarqueeSelection[];
+  onMarqueeUpdate: (selection: {
+    start: { x: number; y: number };
+    current: { x: number; y: number };
+  }) => void;
+  onMarqueeEnd: () => void;
   onCursorMove: (point: { x: number; y: number }) => void;
   onCursorLeave: () => void;
   onLinesChange: (updater: (currentLines: DrawnLine[]) => DrawnLine[]) => void;
   onDrawingCommit: (previousLines: DrawnLine[]) => void;
+  onLiveLineStart: (line: DrawnLine) => void;
+  onLiveLineUpdate: (line: DrawnLine) => void;
   onEraseLine: (lineId: string) => void;
   onEraseCommit: (previousLines: DrawnLine[]) => void;
   onCreateNote: (note: StickyNote) => void;
@@ -302,6 +321,11 @@ type WhiteboardCanvasProps = {
   onMoveTextBox: (textBoxId: string, x: number, y: number) => void;
   onResizeTextBox: (textBoxId: string, bounds: TextBoxBounds) => void;
   onEditTextBox: (textBoxId: string, text: string) => void;
+  onPreviewMoveSelectedObjects: (
+    deltaX: number,
+    deltaY: number,
+    selectedIds: SelectedObjectIds,
+  ) => void;
   onUpdateTextBoxStyle: (
     textBoxId: string,
     style: Partial<Pick<TextBox, "textColor" | "fontWeight" | "textAlign">>,
@@ -378,7 +402,11 @@ const WhiteboardCanvas = forwardRef<
     onResizeTextBox,
     onEditTextBox,
     onUpdateTextBoxStyle,
+    remoteMarquees,
+    onMarqueeUpdate,
+    onMarqueeEnd,
     onDeleteTextBox,
+    onPreviewMoveSelectedObjects,
     onTextBoxPlaced,
     onCreateShape,
     onMoveShape,
@@ -396,6 +424,8 @@ const WhiteboardCanvas = forwardRef<
     remoteCursors,
     onCursorMove,
     onCursorLeave,
+    onLiveLineStart,
+    onLiveLineUpdate,
   }: WhiteboardCanvasProps,
   ref,
 ) {
@@ -423,6 +453,8 @@ const WhiteboardCanvas = forwardRef<
   const resizeStartRef = useRef<StickyNote | null>(null);
   const textBoxResizeStartRef = useRef<TextBox | null>(null);
   const shapeResizeStartRef = useRef<Shape | null>(null);
+  const lastLiveLineUpdateRef = useRef(0);
+  const activeLiveLineRef = useRef<DrawnLine | null>(null);
   const selectionDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -1468,7 +1500,10 @@ const WhiteboardCanvas = forwardRef<
       const point = getBoardPoint(event);
 
       if (point) {
-        setMarqueeSelection({ start: point, current: point });
+        const nextSelection = { start: point, current: point };
+
+        setMarqueeSelection(nextSelection);
+        onMarqueeUpdate(nextSelection);
       }
 
       return;
@@ -1492,21 +1527,22 @@ const WhiteboardCanvas = forwardRef<
     }
 
     const id = crypto.randomUUID();
+    const newLine: DrawnLine = {
+      id,
+      points: [point.x, point.y],
+      stroke: penColor,
+      strokeWidth: penStrokeWidth,
+      zIndex: getNextZIndex(),
+    };
 
     isDrawingRef.current = true;
     activeLineIdRef.current = id;
+    activeLiveLineRef.current = newLine;
     linesBeforeStrokeRef.current = lines;
+    lastLiveLineUpdateRef.current = 0;
 
-    onLinesChange((currentLines) => [
-      ...currentLines,
-      {
-        id,
-        points: [point.x, point.y],
-        stroke: penColor,
-        strokeWidth: penStrokeWidth,
-        zIndex: getNextZIndex(),
-      },
-    ]);
+    onLinesChange((currentLines) => [...currentLines, newLine]);
+    onLiveLineStart(newLine);
   };
 
   const handleMouseMove = (event: KonvaEventObject<MouseEvent>) => {
@@ -1569,14 +1605,13 @@ const WhiteboardCanvas = forwardRef<
         return;
       }
 
-      setMarqueeSelection((currentSelection) =>
-        currentSelection
-          ? {
-              ...currentSelection,
-              current: point,
-            }
-          : currentSelection,
-      );
+      const nextSelection = {
+        ...marqueeSelection,
+        current: point,
+      };
+
+      setMarqueeSelection(nextSelection);
+      onMarqueeUpdate(nextSelection);
       return;
     }
 
@@ -1614,14 +1649,31 @@ const WhiteboardCanvas = forwardRef<
     }
 
     const activeLineId = activeLineIdRef.current;
+    const currentLiveLine = activeLiveLineRef.current;
+
+    if (!currentLiveLine || currentLiveLine.id !== activeLineId) {
+      return;
+    }
+
+    const updatedLine: DrawnLine = {
+      ...currentLiveLine,
+      points: [...currentLiveLine.points, point.x, point.y],
+    };
+
+    activeLiveLineRef.current = updatedLine;
 
     onLinesChange((currentLines) =>
       currentLines.map((line) =>
-        line.id === activeLineId
-          ? { ...line, points: [...line.points, point.x, point.y] }
-          : line,
+        line.id === activeLineId ? updatedLine : line,
       ),
     );
+
+    const now = performance.now();
+
+    if (now - lastLiveLineUpdateRef.current >= 40) {
+      lastLiveLineUpdateRef.current = now;
+      onLiveLineUpdate(updatedLine);
+    }
   };
 
   const handleLineMouseDown = (
@@ -2914,6 +2966,7 @@ const WhiteboardCanvas = forwardRef<
 
     if (isClick) {
       clearSelection();
+      onMarqueeEnd();
       setMarqueeSelection(null);
       return;
     }
@@ -2941,6 +2994,7 @@ const WhiteboardCanvas = forwardRef<
     setSelectedNoteId(null);
     setSelectedTextBoxId(null);
     setSelectedShapeId(null);
+    onMarqueeEnd();
     setMarqueeSelection(null);
   };
 
@@ -2988,8 +3042,16 @@ const WhiteboardCanvas = forwardRef<
       onShapePlaced();
     }
 
-    if (isDrawingRef.current && linesBeforeStrokeRef.current) {
-      onDrawingCommit(linesBeforeStrokeRef.current);
+    if (isDrawingRef.current) {
+      const finalLine = activeLiveLineRef.current;
+
+      if (finalLine) {
+        onLiveLineUpdate(finalLine);
+      }
+
+      if (linesBeforeStrokeRef.current) {
+        onDrawingCommit(linesBeforeStrokeRef.current);
+      }
     }
 
     if (
@@ -3005,6 +3067,7 @@ const WhiteboardCanvas = forwardRef<
     isPanningRef.current = false;
     setIsPanning(false);
     activeLineIdRef.current = null;
+    activeLiveLineRef.current = null;
     lastPanPointRef.current = null;
     linesBeforeStrokeRef.current = null;
     linesBeforeEraseRef.current = null;
@@ -3979,6 +4042,28 @@ const WhiteboardCanvas = forwardRef<
                 />
               );
             })()}
+          {remoteMarquees.map((remoteMarquee) => {
+            const bounds = getMarqueeBounds(remoteMarquee.selection);
+
+            if (!bounds) {
+              return null;
+            }
+
+            return (
+              <Rect
+                key={remoteMarquee.socketId}
+                x={bounds.x}
+                y={bounds.y}
+                width={bounds.width}
+                height={bounds.height}
+                fill={`${remoteMarquee.color}1A`}
+                stroke={remoteMarquee.color}
+                strokeWidth={1.5 / actualScale}
+                dash={[6 / actualScale, 4 / actualScale]}
+                listening={false}
+              />
+            );
+          })}
           {selectedSingleLine &&
             selectedSingleLineBounds &&
             (() => {
@@ -4015,16 +4100,27 @@ const WhiteboardCanvas = forwardRef<
                   }}
                   onDragMove={(event) => {
                     event.cancelBubble = true;
+
+                    const cursorPoint = getBoardPoint(event);
+
+                    if (cursorPoint) {
+                      onCursorMove(cursorPoint);
+                    }
                     const start = selectionDragStartRef.current;
 
                     if (!start) {
                       return;
                     }
 
+                    const deltaX = event.target.x() - start.x;
+                    const deltaY = event.target.y() - start.y;
+
                     setSelectionDragOffset({
-                      x: event.target.x() - start.x,
-                      y: event.target.y() - start.y,
+                      x: deltaX,
+                      y: deltaY,
                     });
+
+                    onPreviewMoveSelectedObjects(deltaX, deltaY, selectedIds);
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
@@ -4106,10 +4202,21 @@ const WhiteboardCanvas = forwardRef<
                   return;
                 }
 
+                const cursorPoint = getBoardPoint(event);
+
+                if (cursorPoint) {
+                  onCursorMove(cursorPoint);
+                }
+
+                const deltaX = event.target.x() - start.x;
+                const deltaY = event.target.y() - start.y;
+
                 setSelectionDragOffset({
-                  x: event.target.x() - start.x,
-                  y: event.target.y() - start.y,
+                  x: deltaX,
+                  y: deltaY,
                 });
+
+                onPreviewMoveSelectedObjects(deltaX, deltaY, selectedIds);
               }}
               onDragEnd={(event) => {
                 event.cancelBubble = true;
