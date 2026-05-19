@@ -32,6 +32,17 @@ type DrawnLine = {
   zIndex: number;
 };
 
+type StickyNote = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  color: string;
+  zIndex: number;
+};
+
 const rooms = new Map<string, RoomUser[]>();
 const roomTitles = new Map<string, string>();
 const roomBoards = new Map<string, RoomBoardState>();
@@ -126,6 +137,25 @@ const isDrawnLine = (value: unknown): value is DrawnLine => {
   );
 };
 
+const isStickyNote = (value: unknown): value is StickyNote => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    typeof candidate.text === "string" &&
+    typeof candidate.color === "string" &&
+    typeof candidate.zIndex === "number"
+  );
+};
+
 const getRoomBoard = (roomCode: string) => {
   const boardState = roomBoards.get(roomCode);
 
@@ -154,9 +184,9 @@ const leaveCurrentRoom = (socket: Socket) => {
   });
 
   socket.to(currentRoomCode).emit("board:marquee:end", {
-  roomCode: currentRoomCode,
-  socketId: socket.id,
-});
+    roomCode: currentRoomCode,
+    socketId: socket.id,
+  });
 
   socket.leave(currentRoomCode);
   socketRooms.delete(socket.id);
@@ -488,6 +518,119 @@ io.on("connection", (socket) => {
     socket.to(normalizedRoomCode).emit("board:marquee:end", {
       roomCode: normalizedRoomCode,
       socketId: socket.id,
+    });
+  });
+
+  socket.on("board:note:create", ({ roomCode, note }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isStickyNote(note)
+    ) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    if (
+      !boardState.notes.some(
+        (currentNote) =>
+          isStickyNote(currentNote) && currentNote.id === note.id,
+      )
+    ) {
+      boardState.notes = [...boardState.notes, note];
+    }
+
+    socket.to(normalizedRoomCode).emit("board:note:create", {
+      roomCode: normalizedRoomCode,
+      note,
+    });
+  });
+
+  socket.on("board:note:update", ({ roomCode, note }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !isStickyNote(note)
+    ) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+    const hasNote = boardState.notes.some(
+      (currentNote) => isStickyNote(currentNote) && currentNote.id === note.id,
+    );
+
+    boardState.notes = hasNote
+      ? boardState.notes.map((currentNote) =>
+          isStickyNote(currentNote) && currentNote.id === note.id
+            ? note
+            : currentNote,
+        )
+      : [...boardState.notes, note];
+
+    socket.to(normalizedRoomCode).emit("board:note:update", {
+      roomCode: normalizedRoomCode,
+      note,
+    });
+  });
+
+  socket.on("board:note:delete", ({ roomCode, noteId }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      typeof noteId !== "string"
+    ) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.notes = boardState.notes.filter(
+      (currentNote) => !isStickyNote(currentNote) || currentNote.id !== noteId,
+    );
+
+    socket.to(normalizedRoomCode).emit("board:note:delete", {
+      roomCode: normalizedRoomCode,
+      noteId,
+    });
+  });
+
+  socket.on("board:notes:delete", ({ roomCode, noteIds }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (
+      !normalizedRoomCode ||
+      !rooms.has(normalizedRoomCode) ||
+      !Array.isArray(noteIds)
+    ) {
+      return;
+    }
+
+    const noteIdSet = new Set(
+      noteIds.filter((noteId): noteId is string => typeof noteId === "string"),
+    );
+
+    if (noteIdSet.size === 0) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.notes = boardState.notes.filter(
+      (currentNote) =>
+        !isStickyNote(currentNote) || !noteIdSet.has(currentNote.id),
+    );
+
+    socket.to(normalizedRoomCode).emit("board:notes:delete", {
+      roomCode: normalizedRoomCode,
+      noteIds: Array.from(noteIdSet),
     });
   });
 

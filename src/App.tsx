@@ -613,6 +613,7 @@ function App() {
   const hasShownReconnectingToastRef = useRef(false);
   const hasShownReconnectFailedToastRef = useRef(false);
   const lastPreviewLineDragEmitRef = useRef(0);
+  const lastPreviewNoteEmitRef = useRef(0);
   const hasShownConnectErrorToastRef = useRef(false);
   const roomUsersRef = useRef<RoomUser[]>([]);
   const skipTitleBlurSaveRef = useRef(false);
@@ -824,6 +825,68 @@ function App() {
       });
     },
     [canEmitBoardLineEvents],
+  );
+
+  const canEmitBoardNoteEvents = canEmitBoardLineEvents;
+
+  const emitNoteCreate = useCallback(
+    (note: StickyNote) => {
+      if (!canEmitBoardNoteEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:note:create", {
+        roomCode: activeRoomCodeRef.current,
+        note,
+      });
+    },
+    [canEmitBoardNoteEvents],
+  );
+
+  const emitNoteUpdate = useCallback(
+    (note: StickyNote) => {
+      if (!canEmitBoardNoteEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:note:update", {
+        roomCode: activeRoomCodeRef.current,
+        note,
+      });
+    },
+    [canEmitBoardNoteEvents],
+  );
+
+  const emitNoteDelete = useCallback(
+    (noteId: string) => {
+      if (!canEmitBoardNoteEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:note:delete", {
+        roomCode: activeRoomCodeRef.current,
+        noteId,
+      });
+    },
+    [canEmitBoardNoteEvents],
+  );
+
+  const emitNotesDelete = useCallback(
+    (noteIds: string[]) => {
+      if (
+        noteIds.length === 0 ||
+        !canEmitBoardNoteEvents() ||
+        !activeRoomCodeRef.current
+      ) {
+        return;
+      }
+
+      socket.emit("board:notes:delete", {
+        roomCode: activeRoomCodeRef.current,
+        noteIds,
+      });
+    },
+    [canEmitBoardNoteEvents],
   );
 
   const resetConnectionToastGuards = useCallback(() => {
@@ -1221,8 +1284,9 @@ function App() {
       ]);
       setRedoHistory([]);
       setNotes((currentNotes) => [...currentNotes, note]);
+      emitNoteCreate(note);
     },
-    [lines, notes, shapes, textBoxes],
+    [emitNoteCreate, lines, notes, shapes, textBoxes],
   );
 
   const handleStickyNotePlaced = useCallback(() => {
@@ -1245,13 +1309,14 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitNoteUpdate({ ...note, x, y });
       setNotes((currentNotes) =>
         currentNotes.map((currentNote) =>
           currentNote.id === noteId ? { ...currentNote, x, y } : currentNote,
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitNoteUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleResizeNote = useCallback(
@@ -1277,6 +1342,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitNoteUpdate({ ...note, ...bounds });
       setNotes((currentNotes) =>
         currentNotes.map((currentNote) =>
           currentNote.id === noteId
@@ -1285,7 +1351,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitNoteUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleEditNote = useCallback(
@@ -1303,6 +1369,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitNoteUpdate({ ...note, text: nextText });
       setNotes((currentNotes) =>
         currentNotes.map((currentNote) =>
           currentNote.id === noteId
@@ -1311,7 +1378,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitNoteUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleDeleteNote = useCallback(
@@ -1326,11 +1393,12 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitNoteDelete(noteId);
       setNotes((currentNotes) =>
         currentNotes.filter((note) => note.id !== noteId),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitNoteDelete, lines, notes, shapes, textBoxes],
   );
 
   const handleCreateTextBox = useCallback(
@@ -1681,11 +1749,14 @@ function App() {
 
   const handlePreviewMoveSelectedObjects = useCallback(
     (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
-      if (selectedIds.lineIds.length === 0) {
+      if (
+        selectedIds.lineIds.length === 0 &&
+        selectedIds.noteIds.length === 0
+      ) {
         return;
       }
 
-      if (!canEmitBoardLineEvents()) {
+      if (!canEmitBoardLineEvents() && !canEmitBoardNoteEvents()) {
         return;
       }
 
@@ -1706,9 +1777,44 @@ function App() {
           ),
         }))
         .forEach(emitLineUpdate);
+      notes
+        .filter((note) => selectedIds.noteIds.includes(note.id))
+        .map((note) => ({
+          ...note,
+          x: note.x + deltaX,
+          y: note.y + deltaY,
+        }))
+        .forEach(emitNoteUpdate);
     },
-    [canEmitBoardLineEvents, emitLineUpdate, lines],
+    [
+      canEmitBoardLineEvents,
+      canEmitBoardNoteEvents,
+      emitLineUpdate,
+      emitNoteUpdate,
+      lines,
+      notes,
+    ],
   );
+
+  const handlePreviewMoveNote = useCallback(
+    (note: StickyNote) => {
+      if (!canEmitBoardNoteEvents()) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastPreviewNoteEmitRef.current < 40) {
+        return;
+      }
+
+      lastPreviewNoteEmitRef.current = now;
+      emitNoteUpdate(note);
+    },
+    [canEmitBoardNoteEvents, emitNoteUpdate],
+  );
+
+  const handlePreviewResizeNote = handlePreviewMoveNote;
 
   const handleMoveSelectedObjects = useCallback(
     (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
@@ -1741,6 +1847,14 @@ function App() {
           ),
         }))
         .forEach(emitLineUpdate);
+      notes
+        .filter((note) => selectedIds.noteIds.includes(note.id))
+        .map((note) => ({
+          ...note,
+          x: note.x + deltaX,
+          y: note.y + deltaY,
+        }))
+        .forEach(emitNoteUpdate);
       setLines((currentLines) =>
         currentLines.map((line) =>
           selectedIds.lineIds.includes(line.id)
@@ -1775,7 +1889,7 @@ function App() {
         ),
       );
     },
-    [emitLineUpdate, lines, notes, shapes, textBoxes],
+    [emitLineUpdate, emitNoteUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleDeleteSelectedObjects = useCallback(
@@ -1797,6 +1911,7 @@ function App() {
       ]);
       setRedoHistory([]);
       emitLinesDelete(selectedIds.lineIds);
+      emitNotesDelete(selectedIds.noteIds);
       setLines((currentLines) =>
         currentLines.filter((line) => !selectedIds.lineIds.includes(line.id)),
       );
@@ -1814,7 +1929,7 @@ function App() {
         ),
       );
     },
-    [emitLinesDelete, lines, notes, shapes, textBoxes],
+    [emitLinesDelete, emitNotesDelete, lines, notes, shapes, textBoxes],
   );
 
   const handleCreateObjectsBatch = useCallback(
@@ -1840,6 +1955,7 @@ function App() {
       ]);
       setRedoHistory([]);
       objects.lines.forEach(emitLineCreate);
+      objects.notes.forEach(emitNoteCreate);
       setLines((currentLines) => [...currentLines, ...objects.lines]);
       setNotes((currentNotes) => [...currentNotes, ...objects.notes]);
       setTextBoxes((currentTextBoxes) => [
@@ -1848,7 +1964,7 @@ function App() {
       ]);
       setShapes((currentShapes) => [...currentShapes, ...objects.shapes]);
     },
-    [emitLineCreate, lines, notes, shapes, textBoxes],
+    [emitLineCreate, emitNoteCreate, lines, notes, shapes, textBoxes],
   );
 
   const getAllZIndexes = (): number[] => [
@@ -2572,6 +2688,80 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const handleRemoteNoteCreate = (payload: {
+      roomCode: string;
+      note: StickyNote;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setNotes((currentNotes) =>
+        currentNotes.some((note) => note.id === payload.note.id)
+          ? currentNotes
+          : [...currentNotes, payload.note],
+      );
+    };
+
+    const handleRemoteNoteUpdate = (payload: {
+      roomCode: string;
+      note: StickyNote;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setNotes((currentNotes) =>
+        currentNotes.some((note) => note.id === payload.note.id)
+          ? currentNotes.map((note) =>
+              note.id === payload.note.id ? payload.note : note,
+            )
+          : [...currentNotes, payload.note],
+      );
+    };
+
+    const handleRemoteNoteDelete = (payload: {
+      roomCode: string;
+      noteId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setNotes((currentNotes) =>
+        currentNotes.filter((note) => note.id !== payload.noteId),
+      );
+    };
+
+    const handleRemoteNotesDelete = (payload: {
+      roomCode: string;
+      noteIds: string[];
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      const noteIdSet = new Set(payload.noteIds);
+
+      setNotes((currentNotes) =>
+        currentNotes.filter((note) => !noteIdSet.has(note.id)),
+      );
+    };
+
+    socket.on("board:note:create", handleRemoteNoteCreate);
+    socket.on("board:note:update", handleRemoteNoteUpdate);
+    socket.on("board:note:delete", handleRemoteNoteDelete);
+    socket.on("board:notes:delete", handleRemoteNotesDelete);
+
+    return () => {
+      socket.off("board:note:create", handleRemoteNoteCreate);
+      socket.off("board:note:update", handleRemoteNoteUpdate);
+      socket.off("board:note:delete", handleRemoteNoteDelete);
+      socket.off("board:notes:delete", handleRemoteNotesDelete);
+    };
+  }, []);
+
+  useEffect(() => {
     const handleRoomUsers = (payload: {
       roomCode: string;
       users: RoomUser[];
@@ -3226,6 +3416,8 @@ function App() {
             onEraseLine={handleEraseLine}
             onEraseCommit={handleEraseCommit}
             onCreateNote={handleCreateNote}
+            onPreviewMoveNote={handlePreviewMoveNote}
+            onPreviewResizeNote={handlePreviewResizeNote}
             onMoveNote={handleMoveNote}
             onResizeNote={handleResizeNote}
             onEditNote={handleEditNote}

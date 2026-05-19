@@ -312,6 +312,8 @@ type WhiteboardCanvasProps = {
   onEraseLine: (lineId: string) => void;
   onEraseCommit: (previousLines: DrawnLine[]) => void;
   onCreateNote: (note: StickyNote) => void;
+  onPreviewMoveNote: (note: StickyNote) => void;
+  onPreviewResizeNote: (note: StickyNote) => void;
   onMoveNote: (noteId: string, x: number, y: number) => void;
   onResizeNote: (noteId: string, bounds: NoteBounds) => void;
   onEditNote: (noteId: string, text: string) => void;
@@ -392,6 +394,8 @@ const WhiteboardCanvas = forwardRef<
     onEraseLine,
     onEraseCommit,
     onCreateNote,
+    onPreviewMoveNote,
+    onPreviewResizeNote,
     onMoveNote,
     onResizeNote,
     onEditNote,
@@ -1214,6 +1218,21 @@ const WhiteboardCanvas = forwardRef<
     };
   };
 
+  const getBoardPointFromClientPoint = (clientX: number, clientY: number) => {
+    const stage = stageRef.current;
+
+    if (!stage) {
+      return null;
+    }
+
+    const stageRect = stage.container().getBoundingClientRect();
+
+    return getBoardPointFromPointer({
+      x: clientX - stageRect.left,
+      y: clientY - stageRect.top,
+    });
+  };
+
   const getBoardPoint = (event: KonvaEventObject<MouseEvent>) => {
     const stage = event.target.getStage();
     const pointerPosition = stage?.getPointerPosition() ?? null;
@@ -1976,9 +1995,15 @@ const WhiteboardCanvas = forwardRef<
       return;
     }
 
+    const nextBounds = getResizedBounds(handle, startingNote, point);
+
     setResizingNote({
       id: note.id,
-      ...getResizedBounds(handle, startingNote, point),
+      ...nextBounds,
+    });
+    onPreviewResizeNote({
+      ...note,
+      ...nextBounds,
     });
   };
 
@@ -3309,6 +3334,12 @@ const WhiteboardCanvas = forwardRef<
                   }}
                   onMouseMove={(event) => {
                     event.cancelBubble = true;
+
+                    const cursorPoint = getBoardPoint(event);
+
+                    if (cursorPoint) {
+                      onCursorMove(cursorPoint);
+                    }
                   }}
                   onDragStart={(event) => {
                     event.cancelBubble = true;
@@ -3321,6 +3352,27 @@ const WhiteboardCanvas = forwardRef<
                       y: note.y,
                     });
                     setStageCursor(event, "grabbing");
+                  }}
+                  onDragMove={(event) => {
+                    event.cancelBubble = true;
+                    const cursorPoint = getBoardPoint(event);
+                    if (cursorPoint) {
+                      onCursorMove(cursorPoint);
+                    }
+                    if (hasMultipleSelection && isSelected && groupDragStart) {
+                      onPreviewMoveSelectedObjects(
+                        event.target.x() - groupDragStart.x,
+                        event.target.y() - groupDragStart.y,
+                        selectedIds,
+                      );
+                      return;
+                    }
+
+                    onPreviewMoveNote({
+                      ...note,
+                      x: event.target.x(),
+                      y: event.target.y(),
+                    });
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
@@ -3431,13 +3483,19 @@ const WhiteboardCanvas = forwardRef<
                                 resizeStartRef.current = renderedNote;
                                 setStageCursor(event, "grabbing");
                               }}
-                              onDragMove={(event) =>
+                              onDragMove={(event) => {
+                                const cursorPoint = getBoardPoint(event);
+
+                                if (cursorPoint) {
+                                  onCursorMove(cursorPoint);
+                                }
+
                                 handleResizeMove(
                                   event,
                                   renderedNote,
                                   resizeHandle.handle,
-                                )
-                              }
+                                );
+                              }}
                               onDragEnd={(event) => {
                                 event.cancelBubble = true;
                                 setStageCursor(event, "auto");
@@ -4974,6 +5032,16 @@ const WhiteboardCanvas = forwardRef<
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   saveEditingNote();
+                }
+              }}
+              onMouseMove={(event) => {
+                const cursorPoint = getBoardPointFromClientPoint(
+                  event.clientX,
+                  event.clientY,
+                );
+
+                if (cursorPoint) {
+                  onCursorMove(cursorPoint);
                 }
               }}
             />
