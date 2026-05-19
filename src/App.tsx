@@ -1,4 +1,5 @@
 import "./App.css";
+import { socket } from "./lib/socket";
 import WhiteboardCanvas from "./canvas/WhiteboardCanvas";
 import type {
   ActiveTool,
@@ -34,6 +35,33 @@ type IconName =
   | "menu"
   | "trash"
   | "eraser";
+
+type RoomUser = {
+  socketId: string;
+  name: string;
+};
+
+type RoomSuccessResponse = {
+  ok: true;
+  roomCode: string;
+  users: RoomUser[];
+  count: number;
+  title?: string;
+  boardData?: BoardFileData;
+};
+
+type RoomErrorResponse = {
+  ok: false;
+  error: string;
+};
+
+type RoomResponse = RoomSuccessResponse | RoomErrorResponse;
+
+type RoomConnectionStatus =
+  | "local"
+  | "connected"
+  | "disconnected"
+  | "reconnecting";
 
 type BoardFileData = {
   version: number;
@@ -94,6 +122,7 @@ declare global {
       newBoard: (payload: {
         isDirty: boolean;
         boardData: BoardFileData;
+        isCollaborative: boolean;
       }) => Promise<{ canceled: boolean }>;
       onRequestCloseState: (callback: () => void) => void;
       respondToCloseRequest: (payload: {
@@ -480,10 +509,44 @@ const SHAPE_OPTIONS = [
   { label: "Line", type: "line" },
   { label: "Arrow", type: "arrow" },
 ] satisfies Array<{ label: string; type: Shape["type"] }>;
+const USER_COLORS = [
+  "#60a5fa",
+  "#a78bfa",
+  "#f472b6",
+  "#fb7185",
+  "#f59e0b",
+  "#34d399",
+  "#22d3ee",
+  "#c084fc",
+  "#4ade80",
+  "#f97316",
+];
+
+function getDisplayName(name: string) {
+  return name.trim() || "Guest";
+}
+
+function getUserInitial(name: string) {
+  return getDisplayName(name).charAt(0).toUpperCase() || "G";
+}
+
+function getStableUserColor(user: RoomUser, index: number) {
+  const colorIndex = Array.from(user.socketId || String(index)).reduce(
+    (total, character) => total + character.charCodeAt(0),
+    index,
+  );
+
+  return USER_COLORS[colorIndex % USER_COLORS.length];
+}
 
 function App() {
+  const [roomError, setRoomError] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+  const [isCreateRoomModalOpen, setIsCreateRoomModalOpen] = useState(false);
+  const [isJoinRoomModalOpen, setIsJoinRoomModalOpen] = useState(false);
+  const [isJoinReplaceConfirmOpen, setIsJoinReplaceConfirmOpen] =
+    useState(false);
   const [isStickyColorPickerOpen, setIsStickyColorPickerOpen] = useState(false);
   const [isPenSettingsOpen, setIsPenSettingsOpen] = useState(false);
   const [isShapePickerOpen, setIsShapePickerOpen] = useState(false);
@@ -509,8 +572,18 @@ function App() {
   const [titleInputWidth, setTitleInputWidth] = useState(
     TITLE_INPUT_HORIZONTAL_CHROME,
   );
-  const [isSavedToastVisible, setIsSavedToastVisible] = useState(false);
-  const [savedToastKey, setSavedToastKey] = useState(0);
+  const [isSuccessToastVisible, setIsSuccessToastVisible] = useState(false);
+  const [successToastMessage, setSuccessToastMessage] = useState("");
+  const [successToastKey, setSuccessToastKey] = useState(0);
+  const [isRoomErrorToastVisible, setIsRoomErrorToastVisible] = useState(false);
+  const [roomErrorToastKey, setRoomErrorToastKey] = useState(0);
+  const [roomDisplayName, setRoomDisplayName] = useState("");
+  const [joinRoomCode, setJoinRoomCode] = useState("");
+  const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
+  const [connectedUsersCount, setConnectedUsersCount] = useState(1);
+  const [roomUsers, setRoomUsers] = useState<RoomUser[]>([]);
+  const [roomConnectionStatus, setRoomConnectionStatus] =
+    useState<RoomConnectionStatus>("local");
   const menuRef = useRef<HTMLDivElement>(null);
   const stickyColorPickerRef = useRef<HTMLDivElement>(null);
   const penSettingsRef = useRef<HTMLDivElement>(null);
@@ -518,7 +591,16 @@ function App() {
   const titleButtonRef = useRef<HTMLButtonElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const titleMeasureRef = useRef<HTMLSpanElement>(null);
-  const savedToastTimeoutRef = useRef<number | null>(null);
+  const successToastTimeoutRef = useRef<number | null>(null);
+  const roomErrorToastTimeoutRef = useRef<number | null>(null);
+  const activeRoomCodeRef = useRef<string | null>(null);
+  const roomConnectionStatusRef =
+    useRef<RoomConnectionStatus>("local");
+  const isEditingTitleRef = useRef(false);
+  const hasShownDisconnectToastRef = useRef(false);
+  const hasShownReconnectingToastRef = useRef(false);
+  const hasShownReconnectFailedToastRef = useRef(false);
+  const hasShownConnectErrorToastRef = useRef(false);
   const skipTitleBlurSaveRef = useRef(false);
   const hasEditedTitleRef = useRef(false);
   const whiteboardCanvasRef = useRef<WhiteboardCanvasHandle>(null);
@@ -546,18 +628,320 @@ function App() {
     [boardTitle, lines, notes, shapes, textBoxes],
   );
 
-  const showSavedToast = useCallback(() => {
-    if (savedToastTimeoutRef.current !== null) {
-      window.clearTimeout(savedToastTimeoutRef.current);
+  const applyBoardData = useCallback((boardData: BoardFileData) => {
+    const nextTitle = boardData.title?.trim() || "Untitled Board";
+
+    setBoardTitle(nextTitle);
+    setDraftTitle(nextTitle);
+    setLines(Array.isArray(boardData.lines) ? boardData.lines : []);
+    setNotes(getBoardNotes(boardData));
+    setShapes(getBoardShapes(boardData));
+    setTextBoxes(getBoardTextBoxes(boardData));
+    setUndoHistory([]);
+    setRedoHistory([]);
+  }, []);
+
+  const showSuccessToast = useCallback((message: string) => {
+    if (successToastTimeoutRef.current !== null) {
+      window.clearTimeout(successToastTimeoutRef.current);
     }
 
-    setSavedToastKey((currentKey) => currentKey + 1);
-    setIsSavedToastVisible(true);
-    savedToastTimeoutRef.current = window.setTimeout(() => {
-      setIsSavedToastVisible(false);
-      savedToastTimeoutRef.current = null;
+    setSuccessToastMessage(message);
+    setSuccessToastKey((currentKey) => currentKey + 1);
+    setIsSuccessToastVisible(true);
+    successToastTimeoutRef.current = window.setTimeout(() => {
+      setIsSuccessToastVisible(false);
+      successToastTimeoutRef.current = null;
     }, 2000);
   }, []);
+
+  const showRoomErrorToast = useCallback((message: string) => {
+    if (roomErrorToastTimeoutRef.current !== null) {
+      window.clearTimeout(roomErrorToastTimeoutRef.current);
+    }
+
+    setRoomError(message);
+    setRoomErrorToastKey((currentKey) => currentKey + 1);
+    setIsRoomErrorToastVisible(true);
+    roomErrorToastTimeoutRef.current = window.setTimeout(() => {
+      setIsRoomErrorToastVisible(false);
+      roomErrorToastTimeoutRef.current = null;
+    }, 2000);
+  }, []);
+
+  const canEmitBoardLineEvents = useCallback(() => {
+    return (
+      Boolean(activeRoomCodeRef.current) &&
+      roomConnectionStatusRef.current === "connected"
+    );
+  }, []);
+
+  const emitLineCreate = useCallback(
+    (line: DrawnLine) => {
+      if (!canEmitBoardLineEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:line:create", {
+        roomCode: activeRoomCodeRef.current,
+        line,
+      });
+    },
+    [canEmitBoardLineEvents],
+  );
+
+  const emitLineUpdate = useCallback(
+    (line: DrawnLine) => {
+      if (!canEmitBoardLineEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:line:update", {
+        roomCode: activeRoomCodeRef.current,
+        line,
+      });
+    },
+    [canEmitBoardLineEvents],
+  );
+
+  const emitLineDelete = useCallback(
+    (lineId: string) => {
+      if (!canEmitBoardLineEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:line:delete", {
+        roomCode: activeRoomCodeRef.current,
+        lineId,
+      });
+    },
+    [canEmitBoardLineEvents],
+  );
+
+  const emitLinesDelete = useCallback(
+    (lineIds: string[]) => {
+      if (
+        lineIds.length === 0 ||
+        !canEmitBoardLineEvents() ||
+        !activeRoomCodeRef.current
+      ) {
+        return;
+      }
+
+      socket.emit("board:lines:delete", {
+        roomCode: activeRoomCodeRef.current,
+        lineIds,
+      });
+    },
+    [canEmitBoardLineEvents],
+  );
+
+  const resetConnectionToastGuards = useCallback(() => {
+    hasShownDisconnectToastRef.current = false;
+    hasShownReconnectingToastRef.current = false;
+    hasShownReconnectFailedToastRef.current = false;
+    hasShownConnectErrorToastRef.current = false;
+  }, []);
+
+  const copyRoomCodeToClipboard = useCallback(async () => {
+    if (!activeRoomCode) {
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(activeRoomCode);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = activeRoomCode;
+        textArea.setAttribute("readonly", "");
+        textArea.style.position = "fixed";
+        textArea.style.opacity = "0";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+
+      showSuccessToast("Saved to Clipboard");
+    } catch {
+      showRoomErrorToast("Could not copy the room code.");
+    }
+  }, [activeRoomCode, showRoomErrorToast, showSuccessToast]);
+
+  const closeRoomModals = useCallback(() => {
+    setIsCreateRoomModalOpen(false);
+    setIsJoinRoomModalOpen(false);
+    setIsJoinReplaceConfirmOpen(false);
+    setRoomDisplayName("");
+    setJoinRoomCode("");
+  }, []);
+
+  const openCreateRoomModal = useCallback(() => {
+    setRoomDisplayName("");
+    setJoinRoomCode("");
+    setIsMenuOpen(false);
+    setIsJoinRoomModalOpen(false);
+    setIsCreateRoomModalOpen(true);
+  }, []);
+
+  const openJoinRoomModal = useCallback(() => {
+    setRoomDisplayName("");
+    setJoinRoomCode("");
+    setIsMenuOpen(false);
+    setIsCreateRoomModalOpen(false);
+    setIsJoinReplaceConfirmOpen(false);
+    setIsJoinRoomModalOpen(true);
+  }, []);
+
+  const createRoom = useCallback(() => {
+    const displayName = roomDisplayName.trim() || "Guest";
+
+    hasShownConnectErrorToastRef.current = false;
+
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.timeout(3000).emit(
+      "room:create",
+      {
+        name: displayName,
+        title: boardTitle.trim() || "Untitled Board",
+        boardData: getBoardFileData(),
+      },
+      (error: Error | null, response?: RoomResponse) => {
+        if (error || !response) {
+          if (!hasShownConnectErrorToastRef.current) {
+            hasShownConnectErrorToastRef.current = true;
+            showRoomErrorToast("Could not connect to the room server.");
+          }
+
+          return;
+        }
+
+        if (!response.ok) {
+          showRoomErrorToast(response.error);
+          return;
+        }
+
+        setActiveRoomCode(response.roomCode);
+        setRoomConnectionStatus("connected");
+        setConnectedUsersCount(response.count);
+        setRoomUsers(response.users);
+        if (response.boardData) {
+          applyBoardData(response.boardData);
+        } else if (response.title) {
+          setBoardTitle(response.title);
+          setDraftTitle(response.title);
+        }
+        resetConnectionToastGuards();
+        setRoomDisplayName(displayName);
+        setIsMenuOpen(false);
+        setIsCreateRoomModalOpen(false);
+        setIsJoinRoomModalOpen(false);
+        setJoinRoomCode("");
+        showSuccessToast("Room created");
+      },
+    );
+  }, [
+    applyBoardData,
+    boardTitle,
+    getBoardFileData,
+    resetConnectionToastGuards,
+    roomDisplayName,
+    showRoomErrorToast,
+    showSuccessToast,
+  ]);
+
+  const joinRoom = useCallback(() => {
+    const displayName = roomDisplayName.trim() || "Guest";
+    const normalizedRoomCode = joinRoomCode.trim().toUpperCase();
+
+    if (!normalizedRoomCode) {
+      return;
+    }
+
+    hasShownConnectErrorToastRef.current = false;
+
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.timeout(3000).emit(
+      "room:join",
+      {
+        roomCode: normalizedRoomCode,
+        name: displayName,
+      },
+      (error: Error | null, response?: RoomResponse) => {
+        if (error || !response) {
+          if (!hasShownConnectErrorToastRef.current) {
+            hasShownConnectErrorToastRef.current = true;
+            showRoomErrorToast("Could not connect to the room server.");
+          }
+
+          return;
+        }
+
+        if (!response.ok) {
+          showRoomErrorToast(response.error);
+          return;
+        }
+
+        setActiveRoomCode(response.roomCode);
+        setRoomConnectionStatus("connected");
+        setConnectedUsersCount(response.count);
+        setRoomUsers(response.users);
+        if (response.boardData) {
+          applyBoardData(response.boardData);
+          setIsDirty(false);
+        } else if (response.title) {
+          setBoardTitle(response.title);
+          setDraftTitle(response.title);
+        }
+        resetConnectionToastGuards();
+        setRoomDisplayName(displayName);
+        setJoinRoomCode("");
+        setIsMenuOpen(false);
+        setIsCreateRoomModalOpen(false);
+        setIsJoinRoomModalOpen(false);
+        setIsJoinReplaceConfirmOpen(false);
+        showSuccessToast("Connected");
+      },
+    );
+  }, [
+    applyBoardData,
+    joinRoomCode,
+    resetConnectionToastGuards,
+    roomDisplayName,
+    showRoomErrorToast,
+    showSuccessToast,
+  ]);
+
+  const requestJoinRoom = useCallback(() => {
+    const hasLocalBoardToReplace =
+      isDirty ||
+      lines.length > 0 ||
+      notes.length > 0 ||
+      shapes.length > 0 ||
+      textBoxes.length > 0;
+
+    if (!hasLocalBoardToReplace) {
+      joinRoom();
+      return;
+    }
+
+    setIsJoinRoomModalOpen(false);
+    setIsJoinReplaceConfirmOpen(true);
+  }, [
+    isDirty,
+    joinRoom,
+    lines.length,
+    notes.length,
+    shapes.length,
+    textBoxes.length,
+  ]);
 
   const saveBoard = useCallback(async () => {
     const result = await window.whiteboardAPI?.saveBoard(getBoardFileData());
@@ -570,7 +954,7 @@ function App() {
 
     setIsDirty(false);
     setIsMenuOpen(false);
-    showSavedToast();
+    showSuccessToast("Saved");
 
     setRecentBoards((currentBoards) =>
       upsertRecentBoard(currentBoards, {
@@ -579,7 +963,7 @@ function App() {
         savedAt: new Date().toISOString(),
       }),
     );
-  }, [boardTitle, getBoardFileData, showSavedToast]);
+  }, [boardTitle, getBoardFileData, showSuccessToast]);
 
   const saveBoardAs = useCallback(async () => {
     const result = await window.whiteboardAPI?.saveBoardAs(getBoardFileData());
@@ -592,7 +976,7 @@ function App() {
 
     setIsDirty(false);
     setIsMenuOpen(false);
-    showSavedToast();
+    showSuccessToast("Saved");
 
     setRecentBoards((currentBoards) =>
       upsertRecentBoard(currentBoards, {
@@ -601,7 +985,7 @@ function App() {
         savedAt: new Date().toISOString(),
       }),
     );
-  }, [boardTitle, getBoardFileData, showSavedToast]);
+  }, [boardTitle, getBoardFileData, showSuccessToast]);
 
   const loadBoard = useCallback(async () => {
     const result = await window.whiteboardAPI?.loadBoard();
@@ -610,14 +994,7 @@ function App() {
       return;
     }
 
-    setBoardTitle(result.data.title || "Untitled Board");
-    setDraftTitle(result.data.title || "Untitled Board");
-    setLines(result.data.lines || []);
-    setNotes(getBoardNotes(result.data));
-    setShapes(getBoardShapes(result.data));
-    setTextBoxes(getBoardTextBoxes(result.data));
-    setUndoHistory([]);
-    setRedoHistory([]);
+    applyBoardData(result.data);
     setIsDirty(false);
     setIsMenuOpen(false);
 
@@ -632,7 +1009,7 @@ function App() {
         }),
       );
     }
-  }, []);
+  }, [applyBoardData]);
 
   const resetBoardState = useCallback(() => {
     setBoardTitle("Untitled Board");
@@ -651,13 +1028,19 @@ function App() {
     setIsShapePickerOpen(false);
     setSelectedStickyColor(null);
     setSelectedShapeType(null);
+    setActiveRoomCode(null);
+    setRoomConnectionStatus("local");
+    setConnectedUsersCount(1);
+    setRoomUsers([]);
+    resetConnectionToastGuards();
     setActiveTool("select");
-  }, []);
+  }, [resetConnectionToastGuards]);
 
   const createNewBoard = useCallback(async () => {
     const result = await window.whiteboardAPI?.newBoard({
       isDirty,
       boardData: getBoardFileData(),
+      isCollaborative: Boolean(activeRoomCode),
     });
 
     if (!result || result.canceled) {
@@ -665,7 +1048,7 @@ function App() {
     }
 
     resetBoardState();
-  }, [getBoardFileData, isDirty, resetBoardState]);
+  }, [activeRoomCode, getBoardFileData, isDirty, resetBoardState]);
 
   const exportBoardAsPng = useCallback(async () => {
     const dataUrl = await whiteboardCanvasRef.current?.getPngDataUrl();
@@ -684,8 +1067,8 @@ function App() {
     }
 
     setIsMenuOpen(false);
-    showSavedToast();
-  }, [boardTitle, showSavedToast]);
+    showSuccessToast("Saved");
+  }, [boardTitle, showSuccessToast]);
 
   const handleLinesChange = useCallback(
     (updater: (currentLines: DrawnLine[]) => DrawnLine[]) => {
@@ -696,14 +1079,21 @@ function App() {
 
   const handleDrawingCommit = useCallback(
     (previousLines: DrawnLine[]) => {
+      const previousLineIds = new Set(previousLines.map((line) => line.id));
+      const createdLine = lines.find((line) => !previousLineIds.has(line.id));
+
       setIsDirty(true);
       setUndoHistory((currentHistory) => [
         ...currentHistory,
         { lines: previousLines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+
+      if (createdLine) {
+        emitLineCreate(createdLine);
+      }
     },
-    [notes, shapes, textBoxes],
+    [emitLineCreate, lines, notes, shapes, textBoxes],
   );
 
   const handleEraseLine = useCallback((lineId: string) => {
@@ -712,9 +1102,10 @@ function App() {
         return currentLines;
       }
 
+      emitLineDelete(lineId);
       return currentLines.filter((line) => line.id !== lineId);
     });
-  }, []);
+  }, [emitLineDelete]);
 
   const handleEraseCommit = useCallback(
     (previousLines: DrawnLine[]) => {
@@ -1217,6 +1608,15 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      lines
+        .filter((line) => selectedIds.lineIds.includes(line.id))
+        .map((line) => ({
+          ...line,
+          points: line.points.map((point, index) =>
+            index % 2 === 0 ? point + deltaX : point + deltaY,
+          ),
+        }))
+        .forEach(emitLineUpdate);
       setLines((currentLines) =>
         currentLines.map((line) =>
           selectedIds.lineIds.includes(line.id)
@@ -1251,7 +1651,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitLineUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleDeleteSelectedObjects = useCallback(
@@ -1272,6 +1672,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitLinesDelete(selectedIds.lineIds);
       setLines((currentLines) =>
         currentLines.filter((line) => !selectedIds.lineIds.includes(line.id)),
       );
@@ -1289,7 +1690,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitLinesDelete, lines, notes, shapes, textBoxes],
   );
 
   const handleCreateObjectsBatch = useCallback(
@@ -1314,6 +1715,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      objects.lines.forEach(emitLineCreate);
       setLines((currentLines) => [...currentLines, ...objects.lines]);
       setNotes((currentNotes) => [...currentNotes, ...objects.notes]);
       setTextBoxes((currentTextBoxes) => [
@@ -1322,7 +1724,7 @@ function App() {
       ]);
       setShapes((currentShapes) => [...currentShapes, ...objects.shapes]);
     },
-    [lines, notes, shapes, textBoxes],
+    [emitLineCreate, lines, notes, shapes, textBoxes],
   );
 
   const getAllZIndexes = (): number[] => [
@@ -1656,13 +2058,21 @@ function App() {
     }
 
     const nextTitle = draftTitle.trim() || "Untitled Board";
+    const titleChanged = nextTitle !== boardTitle;
 
     hasEditedTitleRef.current = false;
     setBoardTitle(nextTitle);
     setDraftTitle(nextTitle);
     setIsEditingTitle(false);
-    if (nextTitle !== boardTitle) {
+    if (titleChanged) {
       setIsDirty(true);
+
+      if (activeRoomCode && roomConnectionStatus === "connected") {
+        socket.emit("board:title:update", {
+          roomCode: activeRoomCode,
+          title: nextTitle,
+        });
+      }
     }
   };
 
@@ -1701,14 +2111,7 @@ function App() {
 
     const title = result.data.title || "Untitled Board";
 
-    setBoardTitle(title);
-    setDraftTitle(title);
-    setLines(result.data.lines || []);
-    setNotes(getBoardNotes(result.data));
-    setShapes(getBoardShapes(result.data));
-    setTextBoxes(getBoardTextBoxes(result.data));
-    setUndoHistory([]);
-    setRedoHistory([]);
+    applyBoardData(result.data);
     setIsDirty(false);
 
     setRecentBoards((currentBoards) =>
@@ -1718,7 +2121,7 @@ function App() {
         savedAt: result.data?.savedAt || new Date().toISOString(),
       }),
     );
-  }, []);
+  }, [applyBoardData]);
 
   useEffect(() => {
     const storedBoards = localStorage.getItem(RECENT_BOARDS_STORAGE_KEY);
@@ -1765,9 +2168,221 @@ function App() {
   }, [getBoardFileData, isDirty]);
 
   useEffect(() => {
+    activeRoomCodeRef.current = activeRoomCode;
+  }, [activeRoomCode]);
+
+  useEffect(() => {
+    roomConnectionStatusRef.current = roomConnectionStatus;
+  }, [roomConnectionStatus]);
+
+  useEffect(() => {
+    isEditingTitleRef.current = isEditingTitle;
+  }, [isEditingTitle]);
+
+  useEffect(() => {
+    if (roomConnectionStatus === "local") {
+      setRoomUsers([]);
+    }
+  }, [roomConnectionStatus]);
+
+  useEffect(() => {
+    const handleBoardTitleUpdate = (payload: {
+      roomCode: string;
+      title: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      const nextTitle = payload.title.trim() || "Untitled Board";
+
+      setBoardTitle(nextTitle);
+
+      if (!isEditingTitleRef.current) {
+        setDraftTitle(nextTitle);
+      }
+    };
+
+    socket.on("board:title:update", handleBoardTitleUpdate);
+
     return () => {
-      if (savedToastTimeoutRef.current !== null) {
-        window.clearTimeout(savedToastTimeoutRef.current);
+      socket.off("board:title:update", handleBoardTitleUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRemoteLineCreate = (payload: {
+      roomCode: string;
+      line: DrawnLine;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setLines((currentLines) =>
+        currentLines.some((line) => line.id === payload.line.id)
+          ? currentLines
+          : [...currentLines, payload.line],
+      );
+    };
+
+    const handleRemoteLineUpdate = (payload: {
+      roomCode: string;
+      line: DrawnLine;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setLines((currentLines) =>
+        currentLines.map((line) =>
+          line.id === payload.line.id ? payload.line : line,
+        ),
+      );
+    };
+
+    const handleRemoteLineDelete = (payload: {
+      roomCode: string;
+      lineId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setLines((currentLines) =>
+        currentLines.filter((line) => line.id !== payload.lineId),
+      );
+    };
+
+    const handleRemoteLinesDelete = (payload: {
+      roomCode: string;
+      lineIds: string[];
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      const lineIdSet = new Set(payload.lineIds);
+
+      setLines((currentLines) =>
+        currentLines.filter((line) => !lineIdSet.has(line.id)),
+      );
+    };
+
+    socket.on("board:line:create", handleRemoteLineCreate);
+    socket.on("board:line:update", handleRemoteLineUpdate);
+    socket.on("board:line:delete", handleRemoteLineDelete);
+    socket.on("board:lines:delete", handleRemoteLinesDelete);
+
+    return () => {
+      socket.off("board:line:create", handleRemoteLineCreate);
+      socket.off("board:line:update", handleRemoteLineUpdate);
+      socket.off("board:line:delete", handleRemoteLineDelete);
+      socket.off("board:lines:delete", handleRemoteLinesDelete);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRoomUsers = (payload: {
+      roomCode: string;
+      users: RoomUser[];
+      count: number;
+    }) => {
+      setActiveRoomCode(payload.roomCode);
+      setRoomConnectionStatus("connected");
+      setRoomUsers(payload.users);
+      setConnectedUsersCount(payload.count);
+    };
+
+    socket.on("room:users", handleRoomUsers);
+
+    return () => {
+      socket.off("room:users", handleRoomUsers);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleConnectError = () => {
+      if (activeRoomCodeRef.current || hasShownConnectErrorToastRef.current) {
+        return;
+      }
+
+      hasShownConnectErrorToastRef.current = true;
+      showRoomErrorToast("Could not connect to the room server.");
+    };
+
+    socket.on("connect_error", handleConnectError);
+
+    return () => {
+      socket.off("connect_error", handleConnectError);
+    };
+  }, [showRoomErrorToast]);
+
+  useEffect(() => {
+    const handleDisconnect = () => {
+      if (activeRoomCodeRef.current) {
+        setRoomConnectionStatus("disconnected");
+
+        if (!hasShownDisconnectToastRef.current) {
+          hasShownDisconnectToastRef.current = true;
+          showRoomErrorToast("Disconnected from room.");
+        }
+      }
+    };
+
+    const handleReconnectAttempt = () => {
+      if (activeRoomCodeRef.current) {
+        setRoomConnectionStatus("reconnecting");
+
+        if (!hasShownReconnectingToastRef.current) {
+          hasShownReconnectingToastRef.current = true;
+          showRoomErrorToast("Reconnecting...");
+        }
+      }
+    };
+
+    const handleReconnect = () => {
+      if (activeRoomCodeRef.current) {
+        setRoomConnectionStatus("connected");
+        resetConnectionToastGuards();
+        showSuccessToast("Reconnected");
+      }
+    };
+
+    const handleReconnectFailed = () => {
+      if (activeRoomCodeRef.current) {
+        setRoomConnectionStatus("disconnected");
+        setConnectedUsersCount(1);
+        setRoomUsers([]);
+
+        if (!hasShownReconnectFailedToastRef.current) {
+          hasShownReconnectFailedToastRef.current = true;
+          showRoomErrorToast("Could not reconnect to room.");
+        }
+      }
+    };
+
+    socket.on("disconnect", handleDisconnect);
+    socket.io.on("reconnect_attempt", handleReconnectAttempt);
+    socket.io.on("reconnect", handleReconnect);
+    socket.io.on("reconnect_failed", handleReconnectFailed);
+
+    return () => {
+      socket.off("disconnect", handleDisconnect);
+      socket.io.off("reconnect_attempt", handleReconnectAttempt);
+      socket.io.off("reconnect", handleReconnect);
+      socket.io.off("reconnect_failed", handleReconnectFailed);
+    };
+  }, [resetConnectionToastGuards, showRoomErrorToast, showSuccessToast]);
+
+  useEffect(() => {
+    return () => {
+      if (successToastTimeoutRef.current !== null) {
+        window.clearTimeout(successToastTimeoutRef.current);
+      }
+
+      if (roomErrorToastTimeoutRef.current !== null) {
+        window.clearTimeout(roomErrorToastTimeoutRef.current);
       }
     };
   }, []);
@@ -1986,6 +2601,32 @@ function App() {
   }, [clearBoard, isClearModalOpen]);
 
   useEffect(() => {
+    if (
+      !isCreateRoomModalOpen &&
+      !isJoinRoomModalOpen &&
+      !isJoinReplaceConfirmOpen
+    ) {
+      return;
+    }
+
+    const handleRoomModalKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeRoomModals();
+      }
+    };
+
+    document.addEventListener("keydown", handleRoomModalKeyboard);
+
+    return () =>
+      document.removeEventListener("keydown", handleRoomModalKeyboard);
+  }, [
+    closeRoomModals,
+    isCreateRoomModalOpen,
+    isJoinReplaceConfirmOpen,
+    isJoinRoomModalOpen,
+  ]);
+
+  useEffect(() => {
     if (isEditingTitle) {
       titleInputRef.current?.focus();
       titleInputRef.current?.select();
@@ -2013,6 +2654,13 @@ function App() {
       currentWidth === clampedWidth ? currentWidth : clampedWidth,
     );
   }, [draftTitle, isEditingTitle]);
+
+  const shouldShowPresence =
+    Boolean(activeRoomCode) &&
+    roomConnectionStatus !== "local" &&
+    roomUsers.length > 0;
+  const visibleRoomUsers = roomUsers.slice(0, 6);
+  const hiddenRoomUserCount = Math.max(roomUsers.length - visibleRoomUsers.length, 0);
 
   return (
     <main className="app-shell">
@@ -2053,6 +2701,11 @@ function App() {
                     className="menu-action"
                     type="button"
                     key={action.label}
+                    onClick={
+                      action.label === "Create"
+                        ? openCreateRoomModal
+                        : openJoinRoomModal
+                    }
                   >
                     <ToolIcon name={action.icon} />
                     <span>
@@ -2104,12 +2757,6 @@ function App() {
                 ))}
               </div>
 
-              <div className="menu-status">
-                <span className="status-dot" aria-hidden="true" />
-                <span>
-                  <strong>Local mode</strong>
-                </span>
-              </div>
             </div>
           )}
         </div>
@@ -2157,13 +2804,35 @@ function App() {
         </div>
 
         <div className="topbar-right">
-          <div className="session-pill" aria-label="Session status">
+          <div
+            className={`session-pill is-${roomConnectionStatus}`}
+            aria-label="Session status"
+          >
             <span className="session-state">
               <span className="status-dot" aria-hidden="true" />
-              Local mode
+              {!activeRoomCode
+                ? "Local mode"
+                : roomConnectionStatus === "reconnecting"
+                  ? "Reconnecting..."
+                  : roomConnectionStatus === "disconnected"
+                    ? "Disconnected"
+                    : "Collaboration mode"}
             </span>
-            <span>Room: Not connected</span>
-            <span>Users: 1</span>
+            {activeRoomCode && (
+              <>
+                <button
+                  className="session-room-code has-tooltip"
+                  type="button"
+                  data-tooltip="Copy to clipboard"
+                  onClick={copyRoomCodeToClipboard}
+                >
+                  Room code: <span>{activeRoomCode}</span>
+                </button>
+                {roomConnectionStatus === "connected" && (
+                  <span>Users: {connectedUsersCount}</span>
+                )}
+              </>
+            )}
           </div>
 
           <div className="zoom-control" aria-label="Zoom controls">
@@ -2202,10 +2871,10 @@ function App() {
         </div>
       </header>
 
-      {isSavedToastVisible && (
+      {isSuccessToastVisible && successToastMessage && (
         <div
           className="saved-toast"
-          key={savedToastKey}
+          key={successToastKey}
           role="status"
           aria-live="polite"
         >
@@ -2216,7 +2885,27 @@ function App() {
           >
             <path d="M20 6 9 17l-5-5" />
           </svg>
-          <span>Saved</span>
+          <span>{successToastMessage}</span>
+        </div>
+      )}
+
+      {isRoomErrorToastVisible && roomError && (
+        <div
+          className="room-error-toast"
+          key={roomErrorToastKey}
+          role="alert"
+          aria-live="assertive"
+        >
+          <svg
+            className="room-error-toast-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path d="M12 8v5" />
+            <path d="M12 17h.01" />
+            <path d="M10.3 4.3 2.8 17.2A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-2.8L13.7 4.3a2 2 0 0 0-3.4 0z" />
+          </svg>
+          <span>{roomError}</span>
         </div>
       )}
 
@@ -2265,6 +2954,38 @@ function App() {
             onZoomChange={handleZoomChange}
           />
         </div>
+
+        {shouldShowPresence && (
+          <div className="presence-list" aria-label="Room users">
+            {visibleRoomUsers.map((user, index) => {
+              const displayName = getDisplayName(user.name);
+
+              return (
+                <button
+                  className="presence-avatar has-tooltip"
+                  type="button"
+                  key={user.socketId}
+                  aria-label={displayName}
+                  data-tooltip={displayName}
+                  style={{ backgroundColor: getStableUserColor(user, index) }}
+                >
+                  {getUserInitial(displayName)}
+                </button>
+              );
+            })}
+
+            {hiddenRoomUserCount > 0 && (
+              <button
+                className="presence-avatar presence-more has-tooltip"
+                type="button"
+                aria-label={`${hiddenRoomUserCount} more users`}
+                data-tooltip={`${hiddenRoomUserCount} more users`}
+              >
+                ...
+              </button>
+            )}
+          </div>
+        )}
 
         {isStickyColorPickerOpen && (
           <div
@@ -2501,6 +3222,139 @@ function App() {
                 onClick={clearBoard}
               >
                 Clear Board
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isCreateRoomModalOpen && (
+        <div className="modal-overlay" role="presentation">
+          <form
+            className="confirmation-modal room-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-room-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createRoom();
+            }}
+          >
+            <h2 id="create-room-title">Create room</h2>
+
+            <label className="modal-field">
+              <span>Your name</span>
+              <input
+                value={roomDisplayName}
+                placeholder="Guest"
+                autoFocus
+                onChange={(event) => setRoomDisplayName(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-button"
+                onClick={closeRoomModals}
+              >
+                Cancel
+              </button>
+              <button type="submit" className="modal-button primary">
+                Create Room
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {isJoinRoomModalOpen && (
+        <div className="modal-overlay" role="presentation">
+          <form
+            className="confirmation-modal room-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="join-room-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              requestJoinRoom();
+            }}
+          >
+            <h2 id="join-room-title">Join room</h2>
+
+            <label className="modal-field">
+              <span>Your name</span>
+              <input
+                value={roomDisplayName}
+                placeholder="Guest"
+                autoFocus
+                onChange={(event) => setRoomDisplayName(event.target.value)}
+              />
+            </label>
+
+            <label className="modal-field">
+              <span>Room code</span>
+              <input
+                value={joinRoomCode}
+                placeholder="X7K2Q"
+                maxLength={12}
+                onChange={(event) =>
+                  setJoinRoomCode(event.target.value.toUpperCase())
+                }
+              />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-button"
+                onClick={closeRoomModals}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="modal-button primary"
+                disabled={!joinRoomCode.trim()}
+              >
+                Join Room
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {isJoinReplaceConfirmOpen && (
+        <div className="modal-overlay" role="presentation">
+          <section
+            className="confirmation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="join-replace-title"
+          >
+            <h2 id="join-replace-title">
+              Joining this room will replace your current board. Continue?
+            </h2>
+            <p>
+              Your current board will be replaced by the collaborative room board.
+              Save it first if you want to keep a local copy.
+            </p>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="modal-button"
+                onClick={() => {
+                  setIsJoinReplaceConfirmOpen(false);
+                  setIsJoinRoomModalOpen(true);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="modal-button primary"
+                onClick={joinRoom}
+              >
+                Continue
               </button>
             </div>
           </section>

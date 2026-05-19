@@ -20,6 +20,12 @@ type BoardData = {
   savedAt: string;
 };
 
+type NewBoardPayload = {
+  isDirty: boolean;
+  boardData: BoardData;
+  isCollaborative?: boolean;
+};
+
 async function saveBoardFile(boardData: BoardData, forceSaveAs = false) {
   if (!mainWindow) return { canceled: true };
 
@@ -140,10 +146,10 @@ ipcMain.handle("board:load-from-path", async (_event, filePath: string) => {
   }
 });
 
-ipcMain.handle("board:new", async (_event, payload) => {
+ipcMain.handle("board:new", async (_event, payload: NewBoardPayload) => {
   if (!mainWindow) return { canceled: true };
 
-  const { isDirty, boardData } = payload;
+  const { isDirty, boardData, isCollaborative } = payload;
 
   if (!isDirty) {
     currentBoardPath = null;
@@ -155,12 +161,18 @@ ipcMain.handle("board:new", async (_event, payload) => {
 
   const result = await dialog.showMessageBox(mainWindow, {
     type: "warning",
-    buttons: ["Save", "Don’t Save", "Cancel"],
+    buttons: isCollaborative
+      ? ["Save Copy", "Don’t Save", "Cancel"]
+      : ["Save", "Don’t Save", "Cancel"],
     defaultId: 0,
     cancelId: 2,
-    title: "Unsaved Changes",
-    message: "Do you want to save changes to this board?",
-    detail: "Your changes will be lost if you don’t save them.",
+    title: isCollaborative ? "Save Collaborative Board?" : "Unsaved Changes",
+    message: isCollaborative
+      ? "Would you like to save a personal copy of this collaborative board?"
+      : "Do you want to save changes to this board?",
+    detail: isCollaborative
+      ? "This saves the current board to your desktop. The shared room will not be affected."
+      : "Your changes will be lost if you don’t save them.",
   });
 
   if (result.response === 2) {
