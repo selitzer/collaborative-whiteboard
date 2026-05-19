@@ -1314,8 +1314,8 @@ input {
   content: "";
   position: absolute;
   top: 0;
-  left: 100%;
-  width: 14px;
+  left: -14px;
+  width: calc(100% + 28px);
   height: 100%;
 }
 
@@ -1351,6 +1351,12 @@ input {
     opacity 120ms ease,
     transform 120ms ease;
   z-index: 100;
+}
+
+.context-menu-submenu-panel.opens-left {
+  right: calc(100% + 10px);
+  left: auto;
+  transform: translateX(4px);
 }
 
 .context-menu-submenu:hover .context-menu-submenu-panel,

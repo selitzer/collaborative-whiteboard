@@ -614,6 +614,8 @@ function App() {
   const hasShownReconnectFailedToastRef = useRef(false);
   const lastPreviewLineDragEmitRef = useRef(0);
   const lastPreviewNoteEmitRef = useRef(0);
+  const lastPreviewTextBoxEmitRef = useRef(0);
+  const lastPreviewShapeEmitRef = useRef(0);
   const hasShownConnectErrorToastRef = useRef(false);
   const roomUsersRef = useRef<RoomUser[]>([]);
   const skipTitleBlurSaveRef = useRef(false);
@@ -631,31 +633,52 @@ function App() {
   const [hasLoadedRecentBoards, setHasLoadedRecentBoards] = useState(false);
   const [recentBoards, setRecentBoards] = useState<RecentBoard[]>([]);
 
-  const getBoardFileData = useCallback(
-    (): BoardFileData => ({
+  const buildBoardFileData = useCallback(
+    (boardState: {
+      title: string;
+      lines: DrawnLine[];
+      notes: StickyNote[];
+      shapes: Shape[];
+      textBoxes: TextBox[];
+    }): BoardFileData => ({
       version: 1,
-      title: boardTitle.trim() || "Untitled Board",
-      lines,
-      notes,
-      shapes,
-      textBoxes,
+      title: boardState.title.trim() || "Untitled Board",
+      lines: boardState.lines,
+      notes: boardState.notes,
+      shapes: boardState.shapes,
+      textBoxes: boardState.textBoxes,
       savedAt: new Date().toISOString(),
     }),
-    [boardTitle, lines, notes, shapes, textBoxes],
+    [],
   );
 
-  const applyBoardData = useCallback((boardData: BoardFileData) => {
-    const nextTitle = boardData.title?.trim() || "Untitled Board";
+  const getBoardFileData = useCallback(
+    (): BoardFileData =>
+      buildBoardFileData({ title: boardTitle, lines, notes, shapes, textBoxes }),
+    [boardTitle, buildBoardFileData, lines, notes, shapes, textBoxes],
+  );
 
-    setBoardTitle(nextTitle);
-    setDraftTitle(nextTitle);
-    setLines(Array.isArray(boardData.lines) ? boardData.lines : []);
-    setNotes(getBoardNotes(boardData));
-    setShapes(getBoardShapes(boardData));
-    setTextBoxes(getBoardTextBoxes(boardData));
-    setUndoHistory([]);
-    setRedoHistory([]);
-  }, []);
+  const applyBoardData = useCallback(
+    (
+      boardData: BoardFileData,
+      options: { clearHistory?: boolean } = {},
+    ) => {
+      const nextTitle = boardData.title?.trim() || "Untitled Board";
+
+      setBoardTitle(nextTitle);
+      setDraftTitle(nextTitle);
+      setLines(Array.isArray(boardData.lines) ? boardData.lines : []);
+      setNotes(getBoardNotes(boardData));
+      setShapes(getBoardShapes(boardData));
+      setTextBoxes(getBoardTextBoxes(boardData));
+
+      if (options.clearHistory ?? true) {
+        setUndoHistory([]);
+        setRedoHistory([]);
+      }
+    },
+    [],
+  );
 
   const showSuccessToast = useCallback((message: string) => {
     if (successToastTimeoutRef.current !== null) {
@@ -888,6 +911,154 @@ function App() {
     },
     [canEmitBoardNoteEvents],
   );
+
+  const canEmitBoardTextBoxEvents = canEmitBoardLineEvents;
+
+  const emitTextBoxCreate = useCallback(
+    (textBox: TextBox) => {
+      if (!canEmitBoardTextBoxEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:textbox:create", {
+        roomCode: activeRoomCodeRef.current,
+        textBox,
+      });
+    },
+    [canEmitBoardTextBoxEvents],
+  );
+
+  const emitTextBoxUpdate = useCallback(
+    (textBox: TextBox) => {
+      if (!canEmitBoardTextBoxEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:textbox:update", {
+        roomCode: activeRoomCodeRef.current,
+        textBox,
+      });
+    },
+    [canEmitBoardTextBoxEvents],
+  );
+
+  const emitTextBoxDelete = useCallback(
+    (textBoxId: string) => {
+      if (!canEmitBoardTextBoxEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:textbox:delete", {
+        roomCode: activeRoomCodeRef.current,
+        textBoxId,
+      });
+    },
+    [canEmitBoardTextBoxEvents],
+  );
+
+  const emitTextBoxesDelete = useCallback(
+    (textBoxIds: string[]) => {
+      if (
+        textBoxIds.length === 0 ||
+        !canEmitBoardTextBoxEvents() ||
+        !activeRoomCodeRef.current
+      ) {
+        return;
+      }
+
+      socket.emit("board:textboxes:delete", {
+        roomCode: activeRoomCodeRef.current,
+        textBoxIds,
+      });
+    },
+    [canEmitBoardTextBoxEvents],
+  );
+
+  const canEmitBoardShapeEvents = canEmitBoardLineEvents;
+
+  const emitShapeCreate = useCallback(
+    (shape: Shape) => {
+      if (!canEmitBoardShapeEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:shape:create", {
+        roomCode: activeRoomCodeRef.current,
+        shape,
+      });
+    },
+    [canEmitBoardShapeEvents],
+  );
+
+  const emitShapeUpdate = useCallback(
+    (shape: Shape) => {
+      if (!canEmitBoardShapeEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:shape:update", {
+        roomCode: activeRoomCodeRef.current,
+        shape,
+      });
+    },
+    [canEmitBoardShapeEvents],
+  );
+
+  const emitShapeDelete = useCallback(
+    (shapeId: string) => {
+      if (!canEmitBoardShapeEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:shape:delete", {
+        roomCode: activeRoomCodeRef.current,
+        shapeId,
+      });
+    },
+    [canEmitBoardShapeEvents],
+  );
+
+  const emitShapesDelete = useCallback(
+    (shapeIds: string[]) => {
+      if (
+        shapeIds.length === 0 ||
+        !canEmitBoardShapeEvents() ||
+        !activeRoomCodeRef.current
+      ) {
+        return;
+      }
+
+      socket.emit("board:shapes:delete", {
+        roomCode: activeRoomCodeRef.current,
+        shapeIds,
+      });
+    },
+    [canEmitBoardShapeEvents],
+  );
+
+  const emitBoardSnapshotUpdate = useCallback(
+    (boardData: BoardFileData) => {
+      if (!canEmitBoardLineEvents() || !activeRoomCodeRef.current) {
+        return;
+      }
+
+      socket.emit("board:snapshot:update", {
+        roomCode: activeRoomCodeRef.current,
+        boardData,
+      });
+    },
+    [canEmitBoardLineEvents],
+  );
+
+  const emitBoardClear = useCallback(() => {
+    if (!canEmitBoardLineEvents() || !activeRoomCodeRef.current) {
+      return;
+    }
+
+    socket.emit("board:clear", {
+      roomCode: activeRoomCodeRef.current,
+    });
+  }, [canEmitBoardLineEvents]);
 
   const resetConnectionToastGuards = useCallback(() => {
     hasShownDisconnectToastRef.current = false;
@@ -1413,8 +1584,9 @@ function App() {
       }
 
       setTextBoxes((currentTextBoxes) => [...currentTextBoxes, textBox]);
+      emitTextBoxCreate(textBox);
     },
-    [lines, notes, shapes, textBoxes],
+    [emitTextBoxCreate, lines, notes, shapes, textBoxes],
   );
 
   const handleMoveTextBox = useCallback(
@@ -1433,6 +1605,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitTextBoxUpdate({ ...textBox, x, y });
       setTextBoxes((currentTextBoxes) =>
         currentTextBoxes.map((currentTextBox) =>
           currentTextBox.id === textBoxId
@@ -1441,7 +1614,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitTextBoxUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleResizeTextBox = useCallback(
@@ -1469,6 +1642,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitTextBoxUpdate({ ...textBox, ...bounds });
       setTextBoxes((currentTextBoxes) =>
         currentTextBoxes.map((currentTextBox) =>
           currentTextBox.id === textBoxId
@@ -1477,7 +1651,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitTextBoxUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleEditTextBox = useCallback(
@@ -1504,13 +1678,14 @@ function App() {
           { lines, notes, shapes, textBoxes: previousTextBoxes },
         ]);
         setRedoHistory([]);
+        emitTextBoxUpdate({ ...currentTextBox, text: nextText });
 
         return currentTextBoxes.map((textBox) =>
           textBox.id === textBoxId ? { ...textBox, text: nextText } : textBox,
         );
       });
     },
-    [lines, notes, shapes],
+    [emitTextBoxUpdate, lines, notes, shapes],
   );
 
   const handleUpdateTextBoxStyle = useCallback(
@@ -1542,6 +1717,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitTextBoxUpdate({ ...textBox, ...style });
       setTextBoxes((currentTextBoxes) =>
         currentTextBoxes.map((currentTextBox) =>
           currentTextBox.id === textBoxId
@@ -1550,7 +1726,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitTextBoxUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleDeleteTextBox = useCallback(
@@ -1565,6 +1741,7 @@ function App() {
         }
 
         if (currentTextBox.text.trim() === "") {
+          emitTextBoxDelete(textBoxId);
           return currentTextBoxes.filter((textBox) => textBox.id !== textBoxId);
         }
 
@@ -1574,11 +1751,12 @@ function App() {
           { lines, notes, shapes, textBoxes: currentTextBoxes },
         ]);
         setRedoHistory([]);
+        emitTextBoxDelete(textBoxId);
 
         return currentTextBoxes.filter((textBox) => textBox.id !== textBoxId);
       });
     },
-    [lines, notes, shapes],
+    [emitTextBoxDelete, lines, notes, shapes],
   );
 
   const handleTextBoxPlaced = useCallback(() => {
@@ -1594,8 +1772,9 @@ function App() {
       ]);
       setRedoHistory([]);
       setShapes((currentShapes) => [...currentShapes, shape]);
+      emitShapeCreate(shape);
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeCreate, lines, notes, shapes, textBoxes],
   );
 
   const handleMoveShape = useCallback(
@@ -1612,6 +1791,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitShapeUpdate({ ...shape, x, y });
       setShapes((currentShapes) =>
         currentShapes.map((currentShape) =>
           currentShape.id === shapeId
@@ -1620,7 +1800,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleResizeShape = useCallback(
@@ -1643,6 +1823,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitShapeUpdate({ ...shape, ...bounds });
       setShapes((currentShapes) =>
         currentShapes.map((currentShape) =>
           currentShape.id === shapeId
@@ -1651,7 +1832,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleEditShape = useCallback(
@@ -1669,6 +1850,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitShapeUpdate({ ...shape, text: nextText });
       setShapes((currentShapes) =>
         currentShapes.map((currentShape) =>
           currentShape.id === shapeId
@@ -1677,7 +1859,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleUpdateShapeStyle = useCallback(
@@ -1717,6 +1899,7 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitShapeUpdate({ ...shape, ...style });
       setShapes((currentShapes) =>
         currentShapes.map((currentShape) =>
           currentShape.id === shapeId
@@ -1725,7 +1908,7 @@ function App() {
         ),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeUpdate, lines, notes, shapes, textBoxes],
   );
 
   const handleDeleteShape = useCallback(
@@ -1740,23 +1923,31 @@ function App() {
         { lines, notes, shapes, textBoxes },
       ]);
       setRedoHistory([]);
+      emitShapeDelete(shapeId);
       setShapes((currentShapes) =>
         currentShapes.filter((shape) => shape.id !== shapeId),
       );
     },
-    [lines, notes, shapes, textBoxes],
+    [emitShapeDelete, lines, notes, shapes, textBoxes],
   );
 
   const handlePreviewMoveSelectedObjects = useCallback(
     (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
       if (
         selectedIds.lineIds.length === 0 &&
-        selectedIds.noteIds.length === 0
+        selectedIds.noteIds.length === 0 &&
+        selectedIds.textBoxIds.length === 0 &&
+        selectedIds.shapeIds.length === 0
       ) {
         return;
       }
 
-      if (!canEmitBoardLineEvents() && !canEmitBoardNoteEvents()) {
+      if (
+        !canEmitBoardLineEvents() &&
+        !canEmitBoardNoteEvents() &&
+        !canEmitBoardTextBoxEvents() &&
+        !canEmitBoardShapeEvents()
+      ) {
         return;
       }
 
@@ -1785,14 +1976,36 @@ function App() {
           y: note.y + deltaY,
         }))
         .forEach(emitNoteUpdate);
+      textBoxes
+        .filter((textBox) => selectedIds.textBoxIds.includes(textBox.id))
+        .map((textBox) => ({
+          ...textBox,
+          x: textBox.x + deltaX,
+          y: textBox.y + deltaY,
+        }))
+        .forEach(emitTextBoxUpdate);
+      shapes
+        .filter((shape) => selectedIds.shapeIds.includes(shape.id))
+        .map((shape) => ({
+          ...shape,
+          x: shape.x + deltaX,
+          y: shape.y + deltaY,
+        }))
+        .forEach(emitShapeUpdate);
     },
     [
       canEmitBoardLineEvents,
       canEmitBoardNoteEvents,
+      canEmitBoardTextBoxEvents,
+      canEmitBoardShapeEvents,
       emitLineUpdate,
       emitNoteUpdate,
+      emitTextBoxUpdate,
+      emitShapeUpdate,
       lines,
       notes,
+      textBoxes,
+      shapes,
     ],
   );
 
@@ -1815,6 +2028,46 @@ function App() {
   );
 
   const handlePreviewResizeNote = handlePreviewMoveNote;
+
+  const handlePreviewMoveTextBox = useCallback(
+    (textBox: TextBox) => {
+      if (!canEmitBoardTextBoxEvents()) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastPreviewTextBoxEmitRef.current < 40) {
+        return;
+      }
+
+      lastPreviewTextBoxEmitRef.current = now;
+      emitTextBoxUpdate(textBox);
+    },
+    [canEmitBoardTextBoxEvents, emitTextBoxUpdate],
+  );
+
+  const handlePreviewResizeTextBox = handlePreviewMoveTextBox;
+
+  const handlePreviewMoveShape = useCallback(
+    (shape: Shape) => {
+      if (!canEmitBoardShapeEvents()) {
+        return;
+      }
+
+      const now = performance.now();
+
+      if (now - lastPreviewShapeEmitRef.current < 40) {
+        return;
+      }
+
+      lastPreviewShapeEmitRef.current = now;
+      emitShapeUpdate(shape);
+    },
+    [canEmitBoardShapeEvents, emitShapeUpdate],
+  );
+
+  const handlePreviewResizeShape = handlePreviewMoveShape;
 
   const handleMoveSelectedObjects = useCallback(
     (deltaX: number, deltaY: number, selectedIds: SelectedObjectIds) => {
@@ -1855,6 +2108,22 @@ function App() {
           y: note.y + deltaY,
         }))
         .forEach(emitNoteUpdate);
+      textBoxes
+        .filter((textBox) => selectedIds.textBoxIds.includes(textBox.id))
+        .map((textBox) => ({
+          ...textBox,
+          x: textBox.x + deltaX,
+          y: textBox.y + deltaY,
+        }))
+        .forEach(emitTextBoxUpdate);
+      shapes
+        .filter((shape) => selectedIds.shapeIds.includes(shape.id))
+        .map((shape) => ({
+          ...shape,
+          x: shape.x + deltaX,
+          y: shape.y + deltaY,
+        }))
+        .forEach(emitShapeUpdate);
       setLines((currentLines) =>
         currentLines.map((line) =>
           selectedIds.lineIds.includes(line.id)
@@ -1889,7 +2158,16 @@ function App() {
         ),
       );
     },
-    [emitLineUpdate, emitNoteUpdate, lines, notes, shapes, textBoxes],
+    [
+      emitLineUpdate,
+      emitNoteUpdate,
+      emitShapeUpdate,
+      emitTextBoxUpdate,
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+    ],
   );
 
   const handleDeleteSelectedObjects = useCallback(
@@ -1912,6 +2190,8 @@ function App() {
       setRedoHistory([]);
       emitLinesDelete(selectedIds.lineIds);
       emitNotesDelete(selectedIds.noteIds);
+      emitTextBoxesDelete(selectedIds.textBoxIds);
+      emitShapesDelete(selectedIds.shapeIds);
       setLines((currentLines) =>
         currentLines.filter((line) => !selectedIds.lineIds.includes(line.id)),
       );
@@ -1929,7 +2209,16 @@ function App() {
         ),
       );
     },
-    [emitLinesDelete, emitNotesDelete, lines, notes, shapes, textBoxes],
+    [
+      emitLinesDelete,
+      emitNotesDelete,
+      emitShapesDelete,
+      emitTextBoxesDelete,
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+    ],
   );
 
   const handleCreateObjectsBatch = useCallback(
@@ -1956,6 +2245,8 @@ function App() {
       setRedoHistory([]);
       objects.lines.forEach(emitLineCreate);
       objects.notes.forEach(emitNoteCreate);
+      objects.textBoxes.forEach(emitTextBoxCreate);
+      objects.shapes.forEach(emitShapeCreate);
       setLines((currentLines) => [...currentLines, ...objects.lines]);
       setNotes((currentNotes) => [...currentNotes, ...objects.notes]);
       setTextBoxes((currentTextBoxes) => [
@@ -1964,7 +2255,16 @@ function App() {
       ]);
       setShapes((currentShapes) => [...currentShapes, ...objects.shapes]);
     },
-    [emitLineCreate, emitNoteCreate, lines, notes, shapes, textBoxes],
+    [
+      emitLineCreate,
+      emitNoteCreate,
+      emitShapeCreate,
+      emitTextBoxCreate,
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+    ],
   );
 
   const getAllZIndexes = (): number[] => [
@@ -2086,51 +2386,69 @@ function App() {
         return object.zIndex;
       };
 
-      setLines((currentLines) =>
-        currentLines.map((line) => ({
-          ...line,
-          zIndex: getNextObjectZIndex({
-            type: "line",
-            id: line.id,
-            zIndex: line.zIndex ?? 0,
-          }),
-        })),
-      );
+      const nextLines = lines.map((line) => ({
+        ...line,
+        zIndex: getNextObjectZIndex({
+          type: "line",
+          id: line.id,
+          zIndex: line.zIndex ?? 0,
+        }),
+      }));
+      const nextNotes = notes.map((note) => ({
+        ...note,
+        zIndex: getNextObjectZIndex({
+          type: "note",
+          id: note.id,
+          zIndex: note.zIndex ?? 0,
+        }),
+      }));
+      const nextTextBoxes = textBoxes.map((textBox) => ({
+        ...textBox,
+        zIndex: getNextObjectZIndex({
+          type: "textBox",
+          id: textBox.id,
+          zIndex: textBox.zIndex ?? 0,
+        }),
+      }));
+      const nextShapes = shapes.map((shape) => ({
+        ...shape,
+        zIndex: getNextObjectZIndex({
+          type: "shape",
+          id: shape.id,
+          zIndex: shape.zIndex ?? 0,
+        }),
+      }));
 
-      setNotes((currentNotes) =>
-        currentNotes.map((note) => ({
-          ...note,
-          zIndex: getNextObjectZIndex({
-            type: "note",
-            id: note.id,
-            zIndex: note.zIndex ?? 0,
-          }),
-        })),
-      );
+      nextLines
+        .filter((line, index) => line.zIndex !== lines[index].zIndex)
+        .forEach(emitLineUpdate);
+      nextNotes
+        .filter((note, index) => note.zIndex !== notes[index].zIndex)
+        .forEach(emitNoteUpdate);
+      nextTextBoxes
+        .filter(
+          (textBox, index) => textBox.zIndex !== textBoxes[index].zIndex,
+        )
+        .forEach(emitTextBoxUpdate);
+      nextShapes
+        .filter((shape, index) => shape.zIndex !== shapes[index].zIndex)
+        .forEach(emitShapeUpdate);
 
-      setTextBoxes((currentTextBoxes) =>
-        currentTextBoxes.map((textBox) => ({
-          ...textBox,
-          zIndex: getNextObjectZIndex({
-            type: "textBox",
-            id: textBox.id,
-            zIndex: textBox.zIndex ?? 0,
-          }),
-        })),
-      );
-
-      setShapes((currentShapes) =>
-        currentShapes.map((shape) => ({
-          ...shape,
-          zIndex: getNextObjectZIndex({
-            type: "shape",
-            id: shape.id,
-            zIndex: shape.zIndex ?? 0,
-          }),
-        })),
-      );
+      setLines(nextLines);
+      setNotes(nextNotes);
+      setTextBoxes(nextTextBoxes);
+      setShapes(nextShapes);
     },
-    [lines, notes, shapes, textBoxes],
+    [
+      emitLineUpdate,
+      emitNoteUpdate,
+      emitShapeUpdate,
+      emitTextBoxUpdate,
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+    ],
   );
 
   const handleLayerSelectedObjects = useCallback(
@@ -2192,39 +2510,55 @@ function App() {
       ]);
       setRedoHistory([]);
 
-      setLines((currentLines) =>
-        currentLines.map((line) =>
-          selectedLineIds.has(line.id)
-            ? { ...line, zIndex: line.zIndex + offset }
-            : line,
-        ),
+      const nextLines = lines.map((line) =>
+        selectedLineIds.has(line.id)
+          ? { ...line, zIndex: line.zIndex + offset }
+          : line,
+      );
+      const nextNotes = notes.map((note) =>
+        selectedNoteIds.has(note.id)
+          ? { ...note, zIndex: note.zIndex + offset }
+          : note,
+      );
+      const nextTextBoxes = textBoxes.map((textBox) =>
+        selectedTextBoxIds.has(textBox.id)
+          ? { ...textBox, zIndex: textBox.zIndex + offset }
+          : textBox,
+      );
+      const nextShapes = shapes.map((shape) =>
+        selectedShapeIds.has(shape.id)
+          ? { ...shape, zIndex: shape.zIndex + offset }
+          : shape,
       );
 
-      setNotes((currentNotes) =>
-        currentNotes.map((note) =>
-          selectedNoteIds.has(note.id)
-            ? { ...note, zIndex: note.zIndex + offset }
-            : note,
-        ),
-      );
+      nextLines
+        .filter((line) => selectedLineIds.has(line.id))
+        .forEach(emitLineUpdate);
+      nextNotes
+        .filter((note) => selectedNoteIds.has(note.id))
+        .forEach(emitNoteUpdate);
+      nextTextBoxes
+        .filter((textBox) => selectedTextBoxIds.has(textBox.id))
+        .forEach(emitTextBoxUpdate);
+      nextShapes
+        .filter((shape) => selectedShapeIds.has(shape.id))
+        .forEach(emitShapeUpdate);
 
-      setTextBoxes((currentTextBoxes) =>
-        currentTextBoxes.map((textBox) =>
-          selectedTextBoxIds.has(textBox.id)
-            ? { ...textBox, zIndex: textBox.zIndex + offset }
-            : textBox,
-        ),
-      );
-
-      setShapes((currentShapes) =>
-        currentShapes.map((shape) =>
-          selectedShapeIds.has(shape.id)
-            ? { ...shape, zIndex: shape.zIndex + offset }
-            : shape,
-        ),
-      );
+      setLines(nextLines);
+      setNotes(nextNotes);
+      setTextBoxes(nextTextBoxes);
+      setShapes(nextShapes);
     },
-    [lines, notes, shapes, textBoxes],
+    [
+      emitLineUpdate,
+      emitNoteUpdate,
+      emitShapeUpdate,
+      emitTextBoxUpdate,
+      lines,
+      notes,
+      shapes,
+      textBoxes,
+    ],
   );
 
   const handleShapePlaced = useCallback(() => {
@@ -2243,6 +2577,13 @@ function App() {
     }
 
     const previousSnapshot = undoHistory[undoHistory.length - 1];
+    const nextBoardData = buildBoardFileData({
+      title: boardTitle,
+      lines: previousSnapshot.lines,
+      notes: previousSnapshot.notes,
+      shapes: previousSnapshot.shapes,
+      textBoxes: previousSnapshot.textBoxes,
+    });
 
     setUndoHistory((currentHistory) => currentHistory.slice(0, -1));
     setRedoHistory((currentHistory) => [
@@ -2253,7 +2594,18 @@ function App() {
     setNotes(previousSnapshot.notes);
     setShapes(previousSnapshot.shapes);
     setTextBoxes(previousSnapshot.textBoxes);
-  }, [canUndo, lines, notes, shapes, textBoxes, undoHistory]);
+    emitBoardSnapshotUpdate(nextBoardData);
+  }, [
+    boardTitle,
+    buildBoardFileData,
+    canUndo,
+    emitBoardSnapshotUpdate,
+    lines,
+    notes,
+    shapes,
+    textBoxes,
+    undoHistory,
+  ]);
 
   const redo = useCallback(() => {
     if (!canRedo) {
@@ -2261,6 +2613,13 @@ function App() {
     }
 
     const nextSnapshot = redoHistory[redoHistory.length - 1];
+    const nextBoardData = buildBoardFileData({
+      title: boardTitle,
+      lines: nextSnapshot.lines,
+      notes: nextSnapshot.notes,
+      shapes: nextSnapshot.shapes,
+      textBoxes: nextSnapshot.textBoxes,
+    });
 
     setRedoHistory((currentHistory) => currentHistory.slice(0, -1));
     setUndoHistory((currentHistory) => [
@@ -2271,7 +2630,18 @@ function App() {
     setNotes(nextSnapshot.notes);
     setShapes(nextSnapshot.shapes);
     setTextBoxes(nextSnapshot.textBoxes);
-  }, [canRedo, lines, notes, shapes, textBoxes, redoHistory]);
+    emitBoardSnapshotUpdate(nextBoardData);
+  }, [
+    boardTitle,
+    buildBoardFileData,
+    canRedo,
+    emitBoardSnapshotUpdate,
+    lines,
+    notes,
+    shapes,
+    textBoxes,
+    redoHistory,
+  ]);
 
   const clearBoard = useCallback(() => {
     if (!canClearBoard) {
@@ -2289,7 +2659,8 @@ function App() {
     setShapes([]);
     setTextBoxes([]);
     setIsClearModalOpen(false);
-  }, [canClearBoard, lines, notes, shapes, textBoxes]);
+    emitBoardClear();
+  }, [canClearBoard, emitBoardClear, lines, notes, shapes, textBoxes]);
 
   const saveTitle = () => {
     if (skipTitleBlurSaveRef.current) {
@@ -2760,6 +3131,189 @@ function App() {
       socket.off("board:notes:delete", handleRemoteNotesDelete);
     };
   }, []);
+
+  useEffect(() => {
+    const handleRemoteTextBoxCreate = (payload: {
+      roomCode: string;
+      textBox: TextBox;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.some((textBox) => textBox.id === payload.textBox.id)
+          ? currentTextBoxes
+          : [...currentTextBoxes, payload.textBox],
+      );
+    };
+
+    const handleRemoteTextBoxUpdate = (payload: {
+      roomCode: string;
+      textBox: TextBox;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.some((textBox) => textBox.id === payload.textBox.id)
+          ? currentTextBoxes.map((textBox) =>
+              textBox.id === payload.textBox.id ? payload.textBox : textBox,
+            )
+          : [...currentTextBoxes, payload.textBox],
+      );
+    };
+
+    const handleRemoteTextBoxDelete = (payload: {
+      roomCode: string;
+      textBoxId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.filter((textBox) => textBox.id !== payload.textBoxId),
+      );
+    };
+
+    const handleRemoteTextBoxesDelete = (payload: {
+      roomCode: string;
+      textBoxIds: string[];
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      const textBoxIdSet = new Set(payload.textBoxIds);
+
+      setTextBoxes((currentTextBoxes) =>
+        currentTextBoxes.filter((textBox) => !textBoxIdSet.has(textBox.id)),
+      );
+    };
+
+    socket.on("board:textbox:create", handleRemoteTextBoxCreate);
+    socket.on("board:textbox:update", handleRemoteTextBoxUpdate);
+    socket.on("board:textbox:delete", handleRemoteTextBoxDelete);
+    socket.on("board:textboxes:delete", handleRemoteTextBoxesDelete);
+
+    return () => {
+      socket.off("board:textbox:create", handleRemoteTextBoxCreate);
+      socket.off("board:textbox:update", handleRemoteTextBoxUpdate);
+      socket.off("board:textbox:delete", handleRemoteTextBoxDelete);
+      socket.off("board:textboxes:delete", handleRemoteTextBoxesDelete);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRemoteShapeCreate = (payload: {
+      roomCode: string;
+      shape: Shape;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setShapes((currentShapes) =>
+        currentShapes.some((shape) => shape.id === payload.shape.id)
+          ? currentShapes
+          : [...currentShapes, payload.shape],
+      );
+    };
+
+    const handleRemoteShapeUpdate = (payload: {
+      roomCode: string;
+      shape: Shape;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setShapes((currentShapes) =>
+        currentShapes.some((shape) => shape.id === payload.shape.id)
+          ? currentShapes.map((shape) =>
+              shape.id === payload.shape.id ? payload.shape : shape,
+            )
+          : [...currentShapes, payload.shape],
+      );
+    };
+
+    const handleRemoteShapeDelete = (payload: {
+      roomCode: string;
+      shapeId: string;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setShapes((currentShapes) =>
+        currentShapes.filter((shape) => shape.id !== payload.shapeId),
+      );
+    };
+
+    const handleRemoteShapesDelete = (payload: {
+      roomCode: string;
+      shapeIds: string[];
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      const shapeIdSet = new Set(payload.shapeIds);
+
+      setShapes((currentShapes) =>
+        currentShapes.filter((shape) => !shapeIdSet.has(shape.id)),
+      );
+    };
+
+    socket.on("board:shape:create", handleRemoteShapeCreate);
+    socket.on("board:shape:update", handleRemoteShapeUpdate);
+    socket.on("board:shape:delete", handleRemoteShapeDelete);
+    socket.on("board:shapes:delete", handleRemoteShapesDelete);
+
+    return () => {
+      socket.off("board:shape:create", handleRemoteShapeCreate);
+      socket.off("board:shape:update", handleRemoteShapeUpdate);
+      socket.off("board:shape:delete", handleRemoteShapeDelete);
+      socket.off("board:shapes:delete", handleRemoteShapesDelete);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRemoteBoardClear = (payload: { roomCode: string }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      setLines([]);
+      setNotes([]);
+      setShapes([]);
+      setTextBoxes([]);
+      setUndoHistory([]);
+      setRedoHistory([]);
+      setIsClearModalOpen(false);
+    };
+
+    const handleRemoteSnapshotUpdate = (payload: {
+      roomCode: string;
+      boardData: BoardFileData;
+    }) => {
+      if (payload.roomCode !== activeRoomCodeRef.current) {
+        return;
+      }
+
+      applyBoardData(payload.boardData, { clearHistory: false });
+    };
+
+    socket.on("board:clear", handleRemoteBoardClear);
+    socket.on("board:snapshot:update", handleRemoteSnapshotUpdate);
+
+    return () => {
+      socket.off("board:clear", handleRemoteBoardClear);
+      socket.off("board:snapshot:update", handleRemoteSnapshotUpdate);
+    };
+  }, [applyBoardData]);
 
   useEffect(() => {
     const handleRoomUsers = (payload: {
@@ -3424,6 +3978,8 @@ function App() {
             onDeleteNote={handleDeleteNote}
             onStickyNotePlaced={handleStickyNotePlaced}
             onCreateTextBox={handleCreateTextBox}
+            onPreviewMoveTextBox={handlePreviewMoveTextBox}
+            onPreviewResizeTextBox={handlePreviewResizeTextBox}
             onMoveTextBox={handleMoveTextBox}
             onResizeTextBox={handleResizeTextBox}
             onEditTextBox={handleEditTextBox}
@@ -3431,6 +3987,8 @@ function App() {
             onDeleteTextBox={handleDeleteTextBox}
             onTextBoxPlaced={handleTextBoxPlaced}
             onCreateShape={handleCreateShape}
+            onPreviewMoveShape={handlePreviewMoveShape}
+            onPreviewResizeShape={handlePreviewResizeShape}
             onMoveShape={handleMoveShape}
             onResizeShape={handleResizeShape}
             onEditShape={handleEditShape}

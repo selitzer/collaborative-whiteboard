@@ -238,7 +238,13 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const ZOOM_SENSITIVITY = 0.0035;
 const CONTEXT_MENU_WIDTH = 156;
-const CONTEXT_MENU_HEIGHT = 132;
+const CANVAS_CONTEXT_MENU_HEIGHT = 88;
+const OBJECT_CONTEXT_MENU_HEIGHT = 202;
+const CONTEXT_SUBMENU_WIDTH = 190;
+const CONTEXT_SUBMENU_HEIGHT = 140;
+const CONTEXT_SUBMENU_GAP = 10;
+const CONTEXT_SUBMENU_TRIGGER_OFFSET = 104;
+const CONTEXT_MENU_SAFE_PADDING = 12;
 const CENTER_ANIMATION_MS = 180;
 const SHAPE_FILL_COLORS = [
   { name: "No fill", value: "transparent" },
@@ -320,6 +326,8 @@ type WhiteboardCanvasProps = {
   onDeleteNote: (noteId: string) => void;
   onStickyNotePlaced: () => void;
   onCreateTextBox: (textBox: TextBox) => void;
+  onPreviewMoveTextBox: (textBox: TextBox) => void;
+  onPreviewResizeTextBox: (textBox: TextBox) => void;
   onMoveTextBox: (textBoxId: string, x: number, y: number) => void;
   onResizeTextBox: (textBoxId: string, bounds: TextBoxBounds) => void;
   onEditTextBox: (textBoxId: string, text: string) => void;
@@ -335,6 +343,8 @@ type WhiteboardCanvasProps = {
   onDeleteTextBox: (textBoxId: string) => void;
   onTextBoxPlaced: () => void;
   onCreateShape: (shape: Shape) => void;
+  onPreviewMoveShape: (shape: Shape) => void;
+  onPreviewResizeShape: (shape: Shape) => void;
   onMoveShape: (shapeId: string, x: number, y: number) => void;
   onResizeShape: (shapeId: string, bounds: ShapeBounds) => void;
   onEditShape: (shapeId: string, text: string) => void;
@@ -402,6 +412,8 @@ const WhiteboardCanvas = forwardRef<
     onDeleteNote,
     onStickyNotePlaced,
     onCreateTextBox,
+    onPreviewMoveTextBox,
+    onPreviewResizeTextBox,
     onMoveTextBox,
     onResizeTextBox,
     onEditTextBox,
@@ -413,6 +425,8 @@ const WhiteboardCanvas = forwardRef<
     onPreviewMoveSelectedObjects,
     onTextBoxPlaced,
     onCreateShape,
+    onPreviewMoveShape,
+    onPreviewResizeShape,
     onMoveShape,
     onResizeShape,
     onEditShape,
@@ -864,6 +878,63 @@ const WhiteboardCanvas = forwardRef<
   useEffect(() => {
     editingTextBoxRef.current = editingTextBox;
   }, [editingTextBox]);
+
+  useEffect(() => {
+    const lineIds = new Set(lines.map((line) => line.id));
+
+    setSelectedLineIds((currentIds) =>
+      currentIds.filter((lineId) => lineIds.has(lineId)),
+    );
+  }, [lines]);
+
+  useEffect(() => {
+    const noteIds = new Set(notes.map((note) => note.id));
+
+    setSelectedNoteIds((currentIds) =>
+      currentIds.filter((noteId) => noteIds.has(noteId)),
+    );
+
+    setSelectedNoteId((currentId) =>
+      currentId && noteIds.has(currentId) ? currentId : null,
+    );
+
+    if (editingNote && !noteIds.has(editingNote.id)) {
+      setEditingNote(null);
+    }
+  }, [editingNote, notes]);
+
+  useEffect(() => {
+    const textBoxIds = new Set(textBoxes.map((textBox) => textBox.id));
+
+    setSelectedTextBoxIds((currentIds) =>
+      currentIds.filter((textBoxId) => textBoxIds.has(textBoxId)),
+    );
+
+    setSelectedTextBoxId((currentId) =>
+      currentId && textBoxIds.has(currentId) ? currentId : null,
+    );
+
+    if (editingTextBox && !textBoxIds.has(editingTextBox.id)) {
+      setEditingTextBox(null);
+      editingTextBoxRef.current = null;
+    }
+  }, [editingTextBox, textBoxes]);
+
+  useEffect(() => {
+    const shapeIds = new Set(shapes.map((shape) => shape.id));
+
+    setSelectedShapeIds((currentIds) =>
+      currentIds.filter((shapeId) => shapeIds.has(shapeId)),
+    );
+
+    setSelectedShapeId((currentId) =>
+      currentId && shapeIds.has(currentId) ? currentId : null,
+    );
+
+    if (editingShape && !shapeIds.has(editingShape.id)) {
+      setEditingShape(null);
+    }
+  }, [editingShape, shapes]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2042,10 +2113,17 @@ const WhiteboardCanvas = forwardRef<
       return;
     }
 
+    const nextBounds = getResizedBounds(handle, startingTextBox, point);
+
     setResizingTextBox({
       id: textBox.id,
-      ...getResizedBounds(handle, startingTextBox, point),
+      ...nextBounds,
     });
+    onPreviewResizeTextBox({
+      ...textBox,
+      ...nextBounds,
+    });
+    onCursorMove(point);
   };
 
   const handleTextBoxResizeEnd = (
@@ -2083,16 +2161,23 @@ const WhiteboardCanvas = forwardRef<
       return;
     }
 
+    const nextBounds = getResizedBounds(
+      handle,
+      startingShape,
+      point,
+      MIN_SHAPE_WIDTH,
+      MIN_SHAPE_HEIGHT,
+    );
+
     setResizingShape({
       id: shape.id,
-      ...getResizedBounds(
-        handle,
-        startingShape,
-        point,
-        MIN_SHAPE_WIDTH,
-        MIN_SHAPE_HEIGHT,
-      ),
+      ...nextBounds,
     });
+    onPreviewResizeShape({
+      ...shape,
+      ...nextBounds,
+    });
+    onCursorMove(point);
   };
 
   const handleShapeResizeEnd = (
@@ -2133,24 +2218,41 @@ const WhiteboardCanvas = forwardRef<
     if (endpoint === "start") {
       const oldEndX = startingShape.x + startingShape.width;
       const oldEndY = startingShape.y + startingShape.height;
-
-      setResizingShape({
-        id: shape.id,
+      const nextBounds = {
         x: point.x,
         y: point.y,
         width: oldEndX - point.x,
         height: oldEndY - point.y,
+      };
+
+      setResizingShape({
+        id: shape.id,
+        ...nextBounds,
       });
+      onPreviewResizeShape({
+        ...shape,
+        ...nextBounds,
+      });
+      onCursorMove(point);
       return;
     }
 
-    setResizingShape({
-      id: shape.id,
+    const nextBounds = {
       x: startingShape.x,
       y: startingShape.y,
       width: point.x - startingShape.x,
       height: point.y - startingShape.y,
+    };
+
+    setResizingShape({
+      id: shape.id,
+      ...nextBounds,
     });
+    onPreviewResizeShape({
+      ...shape,
+      ...nextBounds,
+    });
+    onCursorMove(point);
   };
 
   const handleWheel = (event: KonvaEventObject<WheelEvent>) => {
@@ -2245,7 +2347,11 @@ const WhiteboardCanvas = forwardRef<
     centerAnimationRef.current = requestAnimationFrame(animate);
   };
 
-  const getContextMenuPosition = (clientX: number, clientY: number) => {
+  const getContextMenuPosition = (
+    clientX: number,
+    clientY: number,
+    menuHeight = OBJECT_CONTEXT_MENU_HEIGHT,
+  ) => {
     const container = containerRef.current;
 
     if (!container) {
@@ -2253,16 +2359,57 @@ const WhiteboardCanvas = forwardRef<
     }
 
     const containerRect = container.getBoundingClientRect();
+    const maxX = Math.max(
+      containerRect.width - CONTEXT_MENU_WIDTH - CONTEXT_MENU_SAFE_PADDING,
+      CONTEXT_MENU_SAFE_PADDING,
+    );
+    const maxY = Math.max(
+      containerRect.height - menuHeight - CONTEXT_MENU_SAFE_PADDING,
+      CONTEXT_MENU_SAFE_PADDING,
+    );
     const x = Math.min(
-      Math.max(clientX - containerRect.left, 8),
-      Math.max(containerRect.width - CONTEXT_MENU_WIDTH - 8, 8),
+      Math.max(clientX - containerRect.left, CONTEXT_MENU_SAFE_PADDING),
+      maxX,
     );
     const y = Math.min(
-      Math.max(clientY - containerRect.top, 8),
-      Math.max(containerRect.height - CONTEXT_MENU_HEIGHT - 8, 8),
+      Math.max(clientY - containerRect.top, CONTEXT_MENU_SAFE_PADDING),
+      maxY,
     );
 
     return { x, y };
+  };
+
+  const getContextSubmenuPlacement = () => {
+    if (!contextMenu) {
+      return {
+        className: "context-menu-submenu-panel",
+        style: undefined,
+      };
+    }
+
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const availableWidth = containerRect?.width ?? window.innerWidth;
+    const availableHeight = containerRect?.height ?? window.innerHeight;
+    const opensLeft =
+      contextMenu.x +
+        CONTEXT_MENU_WIDTH +
+        CONTEXT_SUBMENU_GAP +
+        CONTEXT_SUBMENU_WIDTH >
+      availableWidth - CONTEXT_MENU_SAFE_PADDING;
+    const submenuViewportTop = contextMenu.y + CONTEXT_SUBMENU_TRIGGER_OFFSET;
+    const maxSubmenuTop =
+      availableHeight - CONTEXT_SUBMENU_HEIGHT - CONTEXT_MENU_SAFE_PADDING;
+    const offsetY = Math.min(0, maxSubmenuTop - submenuViewportTop);
+
+    return {
+      className: opensLeft
+        ? "context-menu-submenu-panel opens-left"
+        : "context-menu-submenu-panel",
+      style:
+        offsetY < 0
+          ? ({ top: offsetY } as const)
+          : undefined,
+    };
   };
 
   const isPointInsideObject = (point: { x: number; y: number }) => {
@@ -2314,6 +2461,7 @@ const WhiteboardCanvas = forwardRef<
     const position = getContextMenuPosition(
       event.evt.clientX,
       event.evt.clientY,
+      CANVAS_CONTEXT_MENU_HEIGHT,
     );
 
     if (!position) {
@@ -3205,6 +3353,7 @@ const WhiteboardCanvas = forwardRef<
       </svg>
     );
   };
+  const contextSubmenuPlacement = getContextSubmenuPlacement();
 
   return (
     <div
@@ -3584,6 +3733,11 @@ const WhiteboardCanvas = forwardRef<
                   }}
                   onMouseMove={(event) => {
                     event.cancelBubble = true;
+                    const cursorPoint = getBoardPoint(event);
+
+                    if (cursorPoint) {
+                      onCursorMove(cursorPoint);
+                    }
                   }}
                   onDragStart={(event) => {
                     event.cancelBubble = true;
@@ -3598,6 +3752,29 @@ const WhiteboardCanvas = forwardRef<
                       y: shape.y,
                     });
                     setStageCursor(event, "grabbing");
+                  }}
+                  onDragMove={(event) => {
+                    event.cancelBubble = true;
+                    const cursorPoint = getBoardPoint(event);
+
+                    if (cursorPoint) {
+                      onCursorMove(cursorPoint);
+                    }
+
+                    if (groupDragStart && hasMultipleSelection && isSelected) {
+                      onPreviewMoveSelectedObjects(
+                        event.target.x() - groupDragStart.x,
+                        event.target.y() - groupDragStart.y,
+                        selectedIds,
+                      );
+                      return;
+                    }
+
+                    onPreviewMoveShape({
+                      ...shape,
+                      x: event.target.x(),
+                      y: event.target.y(),
+                    });
                   }}
                   onDragEnd={(event) => {
                     event.cancelBubble = true;
@@ -3932,6 +4109,11 @@ const WhiteboardCanvas = forwardRef<
                 }}
                 onMouseMove={(event) => {
                   event.cancelBubble = true;
+                  const cursorPoint = getBoardPoint(event);
+
+                  if (cursorPoint) {
+                    onCursorMove(cursorPoint);
+                  }
                 }}
                 onDragStart={(event) => {
                   event.cancelBubble = true;
@@ -3944,6 +4126,29 @@ const WhiteboardCanvas = forwardRef<
                     y: textBox.y,
                   });
                   setStageCursor(event, "grabbing");
+                }}
+                onDragMove={(event) => {
+                  event.cancelBubble = true;
+                  const cursorPoint = getBoardPoint(event);
+
+                  if (cursorPoint) {
+                    onCursorMove(cursorPoint);
+                  }
+
+                  if (hasMultipleSelection && isSelected && groupDragStart) {
+                    onPreviewMoveSelectedObjects(
+                      event.target.x() - groupDragStart.x,
+                      event.target.y() - groupDragStart.y,
+                      selectedIds,
+                    );
+                    return;
+                  }
+
+                  onPreviewMoveTextBox({
+                    ...textBox,
+                    x: event.target.x(),
+                    y: event.target.y(),
+                  });
                 }}
                 onDragEnd={(event) => {
                   event.cancelBubble = true;
@@ -4515,7 +4720,10 @@ const WhiteboardCanvas = forwardRef<
                   <span className="context-menu-submenu-arrow">›</span>
                 </button>
 
-                <div className="context-menu-submenu-panel">
+                <div
+                  className={contextSubmenuPlacement.className}
+                  style={contextSubmenuPlacement.style}
+                >
                   <button
                     type="button"
                     onClick={() => layerTextBoxFromToolbar("forward")}
@@ -5112,6 +5320,16 @@ const WhiteboardCanvas = forwardRef<
               onBlur={(event) => {
                 saveEditingTextBox(event.currentTarget.value);
               }}
+              onMouseMove={(event) => {
+                const cursorPoint = getBoardPointFromClientPoint(
+                  event.clientX,
+                  event.clientY,
+                );
+
+                if (cursorPoint) {
+                  onCursorMove(cursorPoint);
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -5178,6 +5396,16 @@ const WhiteboardCanvas = forwardRef<
                 )
               }
               onBlur={saveEditingShape}
+              onMouseMove={(event) => {
+                const cursorPoint = getBoardPointFromClientPoint(
+                  event.clientX,
+                  event.clientY,
+                );
+
+                if (cursorPoint) {
+                  onCursorMove(cursorPoint);
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -5253,7 +5481,10 @@ const WhiteboardCanvas = forwardRef<
                   <span className="context-menu-submenu-arrow">›</span>
                 </button>
 
-                <div className="context-menu-submenu-panel">
+                <div
+                  className={contextSubmenuPlacement.className}
+                  style={contextSubmenuPlacement.style}
+                >
                   <button
                     type="button"
                     role="menuitem"

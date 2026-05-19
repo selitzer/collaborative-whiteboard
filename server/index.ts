@@ -43,6 +43,39 @@ type StickyNote = {
   zIndex: number;
 };
 
+type TextBox = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  textColor?: string;
+  fontSize?: number | null;
+  fontWeight?: "normal" | "bold";
+  textAlign?: "left" | "center" | "right";
+  zIndex: number;
+};
+
+type Shape = {
+  id: string;
+  type: "rectangle" | "ellipse" | "triangle" | "line" | "arrow";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text?: string;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
+  textColor?: string;
+  fontSize?: number | null;
+  fontWeight?: "normal" | "bold";
+  textAlign?: "left" | "center" | "right";
+  zIndex: number;
+};
+
 const rooms = new Map<string, RoomUser[]>();
 const roomTitles = new Map<string, string>();
 const roomBoards = new Map<string, RoomBoardState>();
@@ -152,6 +185,77 @@ const isStickyNote = (value: unknown): value is StickyNote => {
     typeof candidate.height === "number" &&
     typeof candidate.text === "string" &&
     typeof candidate.color === "string" &&
+    typeof candidate.zIndex === "number"
+  );
+};
+
+const isTextBox = (value: unknown): value is TextBox => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    typeof candidate.text === "string" &&
+    (candidate.textColor === undefined ||
+      typeof candidate.textColor === "string") &&
+    (candidate.fontSize === undefined ||
+      candidate.fontSize === null ||
+      typeof candidate.fontSize === "number") &&
+    (candidate.fontWeight === undefined ||
+      candidate.fontWeight === "normal" ||
+      candidate.fontWeight === "bold") &&
+    (candidate.textAlign === undefined ||
+      candidate.textAlign === "left" ||
+      candidate.textAlign === "center" ||
+      candidate.textAlign === "right") &&
+    typeof candidate.zIndex === "number"
+  );
+};
+
+const isShape = (value: unknown): value is Shape => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const validTypes = ["rectangle", "ellipse", "triangle", "line", "arrow"];
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.type === "string" &&
+    validTypes.includes(candidate.type) &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.width === "number" &&
+    typeof candidate.height === "number" &&
+    (candidate.text === undefined || typeof candidate.text === "string") &&
+    (candidate.fill === undefined || typeof candidate.fill === "string") &&
+    (candidate.stroke === undefined || typeof candidate.stroke === "string") &&
+    (candidate.strokeWidth === undefined ||
+      typeof candidate.strokeWidth === "number") &&
+    (candidate.lineStyle === undefined ||
+      candidate.lineStyle === "solid" ||
+      candidate.lineStyle === "dashed" ||
+      candidate.lineStyle === "dotted") &&
+    (candidate.textColor === undefined ||
+      typeof candidate.textColor === "string") &&
+    (candidate.fontSize === undefined ||
+      candidate.fontSize === null ||
+      typeof candidate.fontSize === "number") &&
+    (candidate.fontWeight === undefined ||
+      candidate.fontWeight === "normal" ||
+      candidate.fontWeight === "bold") &&
+    (candidate.textAlign === undefined ||
+      candidate.textAlign === "left" ||
+      candidate.textAlign === "center" ||
+      candidate.textAlign === "right") &&
     typeof candidate.zIndex === "number"
   );
 };
@@ -631,6 +735,238 @@ io.on("connection", (socket) => {
     socket.to(normalizedRoomCode).emit("board:notes:delete", {
       roomCode: normalizedRoomCode,
       noteIds: Array.from(noteIdSet),
+    });
+  });
+
+  socket.on("board:textbox:create", ({ roomCode, textBox }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isTextBox(textBox)) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    if (!boardState.textBoxes.some((currentTextBox) => isTextBox(currentTextBox) && currentTextBox.id === textBox.id)) {
+      boardState.textBoxes = [...boardState.textBoxes, textBox];
+    }
+
+    socket.to(normalizedRoomCode).emit("board:textbox:create", {
+      roomCode: normalizedRoomCode,
+      textBox,
+    });
+  });
+
+  socket.on("board:textbox:update", ({ roomCode, textBox }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isTextBox(textBox)) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+    const hasTextBox = boardState.textBoxes.some(
+      (currentTextBox) =>
+        isTextBox(currentTextBox) && currentTextBox.id === textBox.id,
+    );
+
+    boardState.textBoxes = hasTextBox
+      ? boardState.textBoxes.map((currentTextBox) =>
+          isTextBox(currentTextBox) && currentTextBox.id === textBox.id
+            ? textBox
+            : currentTextBox,
+        )
+      : [...boardState.textBoxes, textBox];
+
+    socket.to(normalizedRoomCode).emit("board:textbox:update", {
+      roomCode: normalizedRoomCode,
+      textBox,
+    });
+  });
+
+  socket.on("board:textbox:delete", ({ roomCode, textBoxId }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || typeof textBoxId !== "string") {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.textBoxes = boardState.textBoxes.filter(
+      (currentTextBox) =>
+        !isTextBox(currentTextBox) || currentTextBox.id !== textBoxId,
+    );
+
+    socket.to(normalizedRoomCode).emit("board:textbox:delete", {
+      roomCode: normalizedRoomCode,
+      textBoxId,
+    });
+  });
+
+  socket.on("board:textboxes:delete", ({ roomCode, textBoxIds }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !Array.isArray(textBoxIds)) {
+      return;
+    }
+
+    const textBoxIdSet = new Set(
+      textBoxIds.filter(
+        (textBoxId): textBoxId is string => typeof textBoxId === "string",
+      ),
+    );
+
+    if (textBoxIdSet.size === 0) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.textBoxes = boardState.textBoxes.filter(
+      (currentTextBox) =>
+        !isTextBox(currentTextBox) || !textBoxIdSet.has(currentTextBox.id),
+    );
+
+    socket.to(normalizedRoomCode).emit("board:textboxes:delete", {
+      roomCode: normalizedRoomCode,
+      textBoxIds: Array.from(textBoxIdSet),
+    });
+  });
+
+  socket.on("board:shape:create", ({ roomCode, shape }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isShape(shape)) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    if (!boardState.shapes.some((currentShape) => isShape(currentShape) && currentShape.id === shape.id)) {
+      boardState.shapes = [...boardState.shapes, shape];
+    }
+
+    socket.to(normalizedRoomCode).emit("board:shape:create", {
+      roomCode: normalizedRoomCode,
+      shape,
+    });
+  });
+
+  socket.on("board:shape:update", ({ roomCode, shape }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !isShape(shape)) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+    const hasShape = boardState.shapes.some(
+      (currentShape) => isShape(currentShape) && currentShape.id === shape.id,
+    );
+
+    boardState.shapes = hasShape
+      ? boardState.shapes.map((currentShape) =>
+          isShape(currentShape) && currentShape.id === shape.id
+            ? shape
+            : currentShape,
+        )
+      : [...boardState.shapes, shape];
+
+    socket.to(normalizedRoomCode).emit("board:shape:update", {
+      roomCode: normalizedRoomCode,
+      shape,
+    });
+  });
+
+  socket.on("board:shape:delete", ({ roomCode, shapeId }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || typeof shapeId !== "string") {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.shapes = boardState.shapes.filter(
+      (currentShape) => !isShape(currentShape) || currentShape.id !== shapeId,
+    );
+
+    socket.to(normalizedRoomCode).emit("board:shape:delete", {
+      roomCode: normalizedRoomCode,
+      shapeId,
+    });
+  });
+
+  socket.on("board:shapes:delete", ({ roomCode, shapeIds }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode) || !Array.isArray(shapeIds)) {
+      return;
+    }
+
+    const shapeIdSet = new Set(
+      shapeIds.filter((shapeId): shapeId is string => typeof shapeId === "string"),
+    );
+
+    if (shapeIdSet.size === 0) {
+      return;
+    }
+
+    const boardState = getRoomBoard(normalizedRoomCode);
+
+    boardState.shapes = boardState.shapes.filter(
+      (currentShape) => !isShape(currentShape) || !shapeIdSet.has(currentShape.id),
+    );
+
+    socket.to(normalizedRoomCode).emit("board:shapes:delete", {
+      roomCode: normalizedRoomCode,
+      shapeIds: Array.from(shapeIdSet),
+    });
+  });
+
+  socket.on("board:clear", ({ roomCode }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+      return;
+    }
+
+    const currentBoardState = getRoomBoard(normalizedRoomCode);
+    const nextBoardState = {
+      ...currentBoardState,
+      lines: [],
+      notes: [],
+      shapes: [],
+      textBoxes: [],
+      savedAt: new Date().toISOString(),
+    };
+
+    roomBoards.set(normalizedRoomCode, nextBoardState);
+
+    socket.to(normalizedRoomCode).emit("board:clear", {
+      roomCode: normalizedRoomCode,
+    });
+  });
+
+  socket.on("board:snapshot:update", ({ roomCode, boardData }) => {
+    const normalizedRoomCode = roomCode?.trim().toUpperCase();
+
+    if (!normalizedRoomCode || !rooms.has(normalizedRoomCode)) {
+      return;
+    }
+
+    const normalizedBoardData = normalizeRoomBoardState(
+      boardData,
+      roomTitles.get(normalizedRoomCode),
+    );
+
+    roomTitles.set(normalizedRoomCode, normalizedBoardData.title);
+    roomBoards.set(normalizedRoomCode, normalizedBoardData);
+
+    socket.to(normalizedRoomCode).emit("board:snapshot:update", {
+      roomCode: normalizedRoomCode,
+      boardData: normalizedBoardData,
     });
   });
 
