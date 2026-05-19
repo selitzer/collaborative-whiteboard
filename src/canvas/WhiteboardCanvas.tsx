@@ -476,6 +476,7 @@ const WhiteboardCanvas = forwardRef<
   const lastLiveLineUpdateRef = useRef(0);
   const activeLiveLineRef = useRef<DrawnLine | null>(null);
   const selectionDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const marqueeSelectionRef = useRef<MarqueeSelectionState>(null);
   const [size, setSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -1594,6 +1595,7 @@ const WhiteboardCanvas = forwardRef<
       if (point) {
         const nextSelection = { start: point, current: point };
 
+        marqueeSelectionRef.current = nextSelection;
         setMarqueeSelection(nextSelection);
         onMarqueeUpdate(nextSelection);
       }
@@ -1635,6 +1637,23 @@ const WhiteboardCanvas = forwardRef<
 
     onLinesChange((currentLines) => [...currentLines, newLine]);
     onLiveLineStart(newLine);
+  };
+
+  const updateMarqueeSelection = (point: { x: number; y: number }) => {
+    const currentSelection = marqueeSelectionRef.current;
+
+    if (!currentSelection) {
+      return;
+    }
+
+    const nextSelection = {
+      ...currentSelection,
+      current: point,
+    };
+
+    marqueeSelectionRef.current = nextSelection;
+    setMarqueeSelection(nextSelection);
+    onMarqueeUpdate(nextSelection);
   };
 
   const handleMouseMove = (event: KonvaEventObject<MouseEvent>) => {
@@ -1697,13 +1716,7 @@ const WhiteboardCanvas = forwardRef<
         return;
       }
 
-      const nextSelection = {
-        ...marqueeSelection,
-        current: point,
-      };
-
-      setMarqueeSelection(nextSelection);
-      onMarqueeUpdate(nextSelection);
+      updateMarqueeSelection(point);
       return;
     }
 
@@ -3187,7 +3200,8 @@ const WhiteboardCanvas = forwardRef<
   };
 
   const finishMarqueeSelection = () => {
-    const bounds = getMarqueeBounds(marqueeSelection);
+    const activeSelection = marqueeSelectionRef.current ?? marqueeSelection;
+    const bounds = getMarqueeBounds(activeSelection);
 
     if (!bounds) {
       return;
@@ -3199,6 +3213,7 @@ const WhiteboardCanvas = forwardRef<
     if (isClick) {
       clearSelection();
       onMarqueeEnd();
+      marqueeSelectionRef.current = null;
       setMarqueeSelection(null);
       return;
     }
@@ -3227,11 +3242,12 @@ const WhiteboardCanvas = forwardRef<
     setSelectedTextBoxId(null);
     setSelectedShapeId(null);
     onMarqueeEnd();
+    marqueeSelectionRef.current = null;
     setMarqueeSelection(null);
   };
 
   const stopDrawing = () => {
-    if (marqueeSelection) {
+    if (marqueeSelectionRef.current) {
       finishMarqueeSelection();
     }
 
@@ -3305,6 +3321,60 @@ const WhiteboardCanvas = forwardRef<
     linesBeforeEraseRef.current = null;
     erasedLineIdsRef.current = new Set();
   };
+
+  const isMarqueeSelectionActive = marqueeSelection !== null;
+
+  useEffect(() => {
+    if (!isMarqueeSelectionActive) {
+      return;
+    }
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      const point = getBoardPointFromClientPoint(event.clientX, event.clientY);
+
+      if (!point) {
+        return;
+      }
+
+      onCursorMove(point);
+      updateMarqueeSelection(point);
+    };
+
+    const handleWindowPointerUp = () => {
+      if (marqueeSelectionRef.current) {
+        finishMarqueeSelection();
+      }
+    };
+
+    const handleWindowBlur = () => {
+      if (!marqueeSelectionRef.current) {
+        return;
+      }
+
+      onMarqueeEnd();
+      marqueeSelectionRef.current = null;
+      setMarqueeSelection(null);
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove);
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    window.addEventListener("blur", handleWindowBlur);
+
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, [
+    actualScale,
+    isMarqueeSelectionActive,
+    onCursorMove,
+    onMarqueeEnd,
+    onMarqueeUpdate,
+    viewport.x,
+    viewport.y,
+  ]);
+
   const orderedCanvasItems = [
     ...lines.map((line) => ({
       type: "line" as const,
