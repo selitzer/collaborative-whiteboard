@@ -294,44 +294,6 @@ const DEFAULT_TEXT_COLOR = "#1f2937";
 const DEFAULT_FONT_WEIGHT: TextBox["fontWeight"] = "bold";
 const DEFAULT_TEXT_ALIGN: TextBox["textAlign"] = "center";
 
-const isLightColor = (color: string) => {
-  const normalizedColor = color.trim().toLowerCase();
-
-  if (!normalizedColor || normalizedColor === "transparent") {
-    return false;
-  }
-
-  let red: number;
-  let green: number;
-  let blue: number;
-
-  if (/^#[0-9a-f]{3}$/.test(normalizedColor)) {
-    red = parseInt(normalizedColor[1] + normalizedColor[1], 16);
-    green = parseInt(normalizedColor[2] + normalizedColor[2], 16);
-    blue = parseInt(normalizedColor[3] + normalizedColor[3], 16);
-  } else if (/^#[0-9a-f]{6}$/.test(normalizedColor)) {
-    red = parseInt(normalizedColor.slice(1, 3), 16);
-    green = parseInt(normalizedColor.slice(3, 5), 16);
-    blue = parseInt(normalizedColor.slice(5, 7), 16);
-  } else {
-    const rgbMatch = normalizedColor.match(
-      /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/,
-    );
-
-    if (!rgbMatch) {
-      return false;
-    }
-
-    red = Number(rgbMatch[1]);
-    green = Number(rgbMatch[2]);
-    blue = Number(rgbMatch[3]);
-  }
-
-  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
-
-  return luminance > 0.72;
-};
-
 type WhiteboardCanvasProps = {
   activeTool: ActiveTool;
   lines: DrawnLine[];
@@ -2445,10 +2407,7 @@ const WhiteboardCanvas = forwardRef<
       className: opensLeft
         ? "context-menu-submenu-panel opens-left"
         : "context-menu-submenu-panel",
-      style:
-        offsetY < 0
-          ? ({ top: offsetY } as const)
-          : undefined,
+      style: offsetY < 0 ? ({ top: offsetY } as const) : undefined,
     };
   };
 
@@ -2581,16 +2540,24 @@ const WhiteboardCanvas = forwardRef<
     let nextDeltaX = deltaX;
     let nextDeltaY = deltaY;
 
-    if (bounds.x + bounds.width + nextDeltaX < visibleBounds.left + DRAG_VISIBLE_MARGIN) {
-      nextDeltaX = visibleBounds.left + DRAG_VISIBLE_MARGIN - (bounds.x + bounds.width);
+    if (
+      bounds.x + bounds.width + nextDeltaX <
+      visibleBounds.left + DRAG_VISIBLE_MARGIN
+    ) {
+      nextDeltaX =
+        visibleBounds.left + DRAG_VISIBLE_MARGIN - (bounds.x + bounds.width);
     }
 
     if (bounds.x + nextDeltaX > visibleBounds.right - DRAG_VISIBLE_MARGIN) {
       nextDeltaX = visibleBounds.right - DRAG_VISIBLE_MARGIN - bounds.x;
     }
 
-    if (bounds.y + bounds.height + nextDeltaY < visibleBounds.top + DRAG_VISIBLE_MARGIN) {
-      nextDeltaY = visibleBounds.top + DRAG_VISIBLE_MARGIN - (bounds.y + bounds.height);
+    if (
+      bounds.y + bounds.height + nextDeltaY <
+      visibleBounds.top + DRAG_VISIBLE_MARGIN
+    ) {
+      nextDeltaY =
+        visibleBounds.top + DRAG_VISIBLE_MARGIN - (bounds.y + bounds.height);
     }
 
     if (bounds.y + nextDeltaY > visibleBounds.bottom - DRAG_VISIBLE_MARGIN) {
@@ -3618,11 +3585,12 @@ const WhiteboardCanvas = forwardRef<
                       return;
                     }
 
-                    const clampedPosition = clampObjectPositionToVisibleViewport(
-                      note,
-                      event.target.x(),
-                      event.target.y(),
-                    );
+                    const clampedPosition =
+                      clampObjectPositionToVisibleViewport(
+                        note,
+                        event.target.x(),
+                        event.target.y(),
+                      );
                     event.target.position(clampedPosition);
                     onPreviewMoveNote({
                       ...note,
@@ -3644,11 +3612,12 @@ const WhiteboardCanvas = forwardRef<
                         selectedIds,
                       );
                     } else {
-                      const clampedPosition = clampObjectPositionToVisibleViewport(
-                        note,
-                        event.target.x(),
-                        event.target.y(),
-                      );
+                      const clampedPosition =
+                        clampObjectPositionToVisibleViewport(
+                          note,
+                          event.target.x(),
+                          event.target.y(),
+                        );
                       onMoveNote(note.id, clampedPosition.x, clampedPosition.y);
                     }
                     setGroupDragStart(null);
@@ -3895,11 +3864,12 @@ const WhiteboardCanvas = forwardRef<
                       return;
                     }
 
-                    const clampedPosition = clampObjectPositionToVisibleViewport(
-                      getNormalizedBounds(shape),
-                      event.target.x(),
-                      event.target.y(),
-                    );
+                    const clampedPosition =
+                      clampObjectPositionToVisibleViewport(
+                        getNormalizedBounds(shape),
+                        event.target.x(),
+                        event.target.y(),
+                      );
                     event.target.position(clampedPosition);
                     onPreviewMoveShape({
                       ...shape,
@@ -3922,11 +3892,12 @@ const WhiteboardCanvas = forwardRef<
                         selectedIds,
                       );
                     } else {
-                      const clampedPosition = clampObjectPositionToVisibleViewport(
-                        getNormalizedBounds(shape),
-                        event.target.x(),
-                        event.target.y(),
-                      );
+                      const clampedPosition =
+                        clampObjectPositionToVisibleViewport(
+                          getNormalizedBounds(shape),
+                          event.target.x(),
+                          event.target.y(),
+                        );
                       onMoveShape(
                         shape.id,
                         clampedPosition.x,
@@ -4323,11 +4294,12 @@ const WhiteboardCanvas = forwardRef<
                       selectedIds,
                     );
                   } else {
-                    const clampedPosition = clampObjectPositionToVisibleViewport(
-                      textBox,
-                      event.target.x(),
-                      event.target.y(),
-                    );
+                    const clampedPosition =
+                      clampObjectPositionToVisibleViewport(
+                        textBox,
+                        event.target.x(),
+                        event.target.y(),
+                      );
                     onMoveTextBox(
                       textBox.id,
                       clampedPosition.x,
@@ -4777,12 +4749,13 @@ const WhiteboardCanvas = forwardRef<
             }
           >
             <span
-              className={
-                isLightColor(renderedSelectedTextBox.textColor)
-                  ? "text-toolbar-color is-light-color"
-                  : "text-toolbar-color"
+              className="text-toolbar-color"
+              style={
+                {
+                  "--text-toolbar-underline-color":
+                    renderedSelectedTextBox.textColor,
+                } as React.CSSProperties
               }
-              style={{ color: renderedSelectedTextBox.textColor }}
             >
               A
             </span>
@@ -5068,12 +5041,13 @@ const WhiteboardCanvas = forwardRef<
                   }
                 >
                   <span
-                    className={
-                      isLightColor(renderedSelectedShape.textColor)
-                        ? "text-toolbar-color is-light-color"
-                        : "text-toolbar-color"
+                    className="text-toolbar-color"
+                    style={
+                      {
+                        "--text-toolbar-underline-color":
+                          renderedSelectedShape.textColor,
+                      } as React.CSSProperties
                     }
-                    style={{ color: renderedSelectedShape.textColor }}
                   >
                     A
                   </span>

@@ -1048,23 +1048,28 @@ input {
 }
 
 .text-toolbar-color {
+  --text-toolbar-underline-color: #1f2937;
+  position: relative;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border-bottom: 3px solid currentColor;
-  font-size: 16px;
-  font-weight: 800;
+  width: 22px;
+  height: 22px;
+  color: #1f2937;
+  font-size: 17px;
+  font-weight: 850;
   line-height: 1;
 }
 
-.text-toolbar-color.is-light-color {
-  -webkit-text-stroke: 0.45px rgba(17, 24, 39, 0.62);
-  text-shadow:
-    0 1px 1px rgba(17, 24, 39, 0.65),
-    1px 0 0 rgba(17, 24, 39, 0.35),
-    -1px 0 0 rgba(17, 24, 39, 0.35);
-  box-shadow: 0 1px 0 rgba(17, 24, 39, 0.55);
+.text-toolbar-color::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: 0px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--text-toolbar-underline-color);
+  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.08);
 }
 
 .text-toolbar-size {
