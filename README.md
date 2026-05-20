@@ -10,7 +10,7 @@
 ![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?style=for-the-badge&logo=socketdotio&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)
 
-[**Download for macOS**](#download) · [Features](#features) · [Getting Started](#getting-started)
+[**Download for macOS**](#download) / [Features](#features) / [Getting Started](#getting-started)
 
 </div>
 
@@ -52,10 +52,10 @@
 
 | Layer | Tech |
 |---|---|
-| Desktop Shell | Electron · Electron Builder |
-| Frontend | React · TypeScript · Vite |
-| Canvas | Konva · React Konva |
-| Backend | Node.js · Socket.IO |
+| Desktop Shell | Electron / Electron Builder |
+| Frontend | React / TypeScript / Vite |
+| Canvas | Konva / React Konva |
+| Backend | Node.js / Socket.IO |
 | Hosting | DigitalOcean Droplet |
 
 </div>
